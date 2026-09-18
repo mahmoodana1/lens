@@ -19,10 +19,26 @@ Settled with the user during brainstorming:
 
 1. **Automatic in every Claude Code session**, in any directory, with no
    per-project setup.
-2. **Panel auto-spawns as a tmux pane** on the first edit of a session, and is
-   reused afterward. Outside tmux, capture still happens silently and the
-   panel can be opened by hand.
-3. **Two views over the same data**, toggled with `t`: a chronological
+2. **Panel auto-spawns as a tmux popup** when Claude finishes a turn that
+   changed files. A popup holds the client's keyboard, so the panel is
+   scrollable the moment it appears, with no pane to switch to first — and
+   waiting for the end of the turn is what keeps it from taking the keyboard
+   while Claude is still working. A key bound to `lens popup` reopens it.
+   Outside tmux, capture still happens silently and the panel can be opened
+   by hand.
+3. **Unread edits are visible at a glance.** Landing on an edit reads it — the
+   panel is for reading, so looking at one is reading it — and the read set is
+   persisted per session in `seen`, since the popup is opened and closed
+   repeatedly and read state that reset each time would be worthless.
+4. **`/` filters the list by file name**, fuzzy and as you type. The order stays
+   the view's own, so narrowing a timeline does not reshuffle it; the ranking
+   decides where the cursor lands instead.
+5. **The diff wears the editor's colours.** tokyonight-moon, expressed as a
+   chroma style, on every line including added and removed ones; what marks a
+   change is a wash of the diff colour behind the code, not flattening it to a
+   single green or red. The diff has its own cursor when focused, and scrolls
+   from either pane, so reading a long hunk never needs a focus change.
+6. **Two views over the same data**, toggled with `t`: a chronological
    timeline of edits, and a file-grouped view with cumulative counts.
 4. **Learning aids:** syntax highlighting, the prompt that caused each edit,
    and expandable surrounding context.
@@ -106,10 +122,12 @@ One Go binary, `lens`, wearing two hats:
 | Invocation | Role |
 |---|---|
 | `lens hook session-start` | records the project's pre-session state |
-| `lens hook post-tool-use` | appends an event (or scans, for Bash), spawns the pane if needed |
+| `lens hook post-tool-use` | appends an event (or scans, for Bash) |
 | `lens hook prompt` | records prompt text by `prompt_id` |
+| `lens hook stop` | opens the popup, if the turn changed anything |
 | `lens hook session-end` | marks the session ended |
-| `lens` | the TUI |
+| `lens popup` | opens the popup over the current tmux pane |
+| `lens` | the TUI, as the popup runs it |
 
 A single static binary means the hooks have no runtime dependency — no shell
 parsing, no `jq`, and a fast path for something that runs on every edit.
@@ -121,7 +139,11 @@ Per session, under `$XDG_STATE_HOME/lens/<session_id>/`:
 - `meta.json` — project cwd, start time, ended flag
 - `events.jsonl` — one record per edit, append-only
 - `prompts.jsonl` — `prompt_id` → prompt text
-- `pane` — the tmux pane id, once spawned (also the spawn lock)
+- `seen` — sequence numbers of edits already read, one per line
+- `announced` — the highest edit the panel has been opened for
+
+Beside the session directories, `auto-open-off` lists the projects whose panel
+must not open by itself, one path per line.
 
 Append-only JSONL is what makes the live panel simple: the TUI tails the file
 and never contends with the writer.
@@ -133,9 +155,16 @@ never written, so a long session's log stays small.
 ### Lifecycle
 
 1. First `post-tool-use` of a session creates the session directory.
-2. If a tmux pane can be found and `pane` does not yet exist, the hook splits
-   that pane to run `lens` and records the new pane id. The file is created
-   with `O_EXCL`, so concurrent edits cannot spawn two panes.
+2. `Stop` opens the popup over the session's pane, if the turn recorded an edit
+   the panel has not already been opened for — the test is against `announced`,
+   not against the session having any edits at all, or the first edit of a
+   session would reopen the panel at the end of every later turn. Auto-open can
+   be turned off per project with `lens auto off` — a repo you want quiet should
+   not silence the others — and capture continues regardless, so nothing is lost
+   while it is off.
+   `display-popup` does not return until the popup is dismissed, so the spawn
+   is detached — a hook that waited on it would freeze the session for as long
+   as the panel stayed open.
 
    The pane is located by controlling terminal, not by `$TMUX`. Hook processes
    do not reliably inherit the terminal's environment variables — a session
@@ -144,11 +173,15 @@ never written, so a long session's log stays small.
    reports which pane owns which tty, so `#{pane_tty}` is matched against it.
    `$TMUX_PANE` is still used as a fast path when present.
 
+   A popup also needs an attached client; with none, tmux refuses it.
+
    When no pane can be found, the reason is written once per session to
    `debug.log` and to a `pane-unavailable` marker, so an invisible panel is
    never a silent one.
 3. The TUI tails `events.jsonl` and re-renders on change.
-4. `SessionEnd` writes an ended marker. The TUI keeps rendering, so the
+4. Closing the panel closes the popup and nothing else: the log survives so the
+   `lens popup` binding can bring it back. Logs are swept after 24 hours.
+5. `SessionEnd` writes an ended marker. The TUI keeps rendering, so the
    session can still be read after Claude exits.
 5. Quitting the TUI deletes the session directory. A sweep at startup removes
    directories orphaned for more than 24 hours.

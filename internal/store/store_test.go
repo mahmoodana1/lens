@@ -3,6 +3,7 @@ package store_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -183,5 +184,129 @@ func TestReadMissingSessionIsEmptyNotAnError(t *testing.T) {
 	}
 	if len(got.Events) != 0 {
 		t.Errorf("events = %d, want 0", len(got.Events))
+	}
+}
+
+// Read state has to outlive the panel. Closing the popup and opening it again
+// must not turn everything unread, or the marks are worthless.
+func TestSeenSurvivesReopening(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, err := store.Open("sess-seen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(capture.Event{Tool: "Edit", Rel: "a.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(capture.Event{Tool: "Edit", Rel: "b.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkSeen(1); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open("sess-seen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := reopened.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !sess.Seen[1] {
+		t.Error("edit 1 was read, but came back unread")
+	}
+	if sess.Seen[2] {
+		t.Error("edit 2 was never selected, but came back read")
+	}
+}
+
+// The same edit being selected over and over must not grow the file forever.
+func TestMarkSeenIsIdempotent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, err := store.Open("sess-twice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(capture.Event{Tool: "Edit", Rel: "a.go"}); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if err := s.MarkSeen(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	b, err := os.ReadFile(filepath.Join(store.Dir("sess-twice"), "seen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(strings.TrimSpace(string(b)), "\n") + 1; got != 1 {
+		t.Errorf("seen file holds %d lines, want 1", got)
+	}
+}
+
+// The panel opens for edits, not for turns. Remembering how far it has already
+// been opened is what keeps a turn that changed nothing from reopening it.
+func TestAnnouncedSurvivesReopening(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, err := store.Open("sess-ann")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Announced(); err != nil || got != 0 {
+		t.Fatalf("a fresh session has announced nothing: got %d, %v", got, err)
+	}
+	if err := s.Announce(4); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open("sess-ann")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reopened.Announced(); err != nil || got != 4 {
+		t.Errorf("announced = %d, %v; want 4", got, err)
+	}
+}
+
+// Auto-open is a per-project preference: silencing a noisy repo must not
+// silence every other one.
+func TestAutoOpenIsRememberedPerProject(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	if !store.AutoOpen("/p/one") || !store.AutoOpen("/p/two") {
+		t.Fatal("auto-open should be on by default everywhere")
+	}
+
+	on, err := store.ToggleAutoOpen("/p/one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on || store.AutoOpen("/p/one") {
+		t.Error("the first toggle should turn /p/one off")
+	}
+	if !store.AutoOpen("/p/two") {
+		t.Error("turning /p/one off also silenced /p/two")
+	}
+
+	if on, err = store.ToggleAutoOpen("/p/one"); err != nil || !on || !store.AutoOpen("/p/one") {
+		t.Errorf("toggling again should turn /p/one back on: on=%v err=%v", on, err)
+	}
+}
+
+// A path and the same path with a trailing slash are one project.
+func TestAutoOpenIgnoresPathShape(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	if err := store.SetAutoOpen("/p/one/", false); err != nil {
+		t.Fatal(err)
+	}
+	if store.AutoOpen("/p/one") {
+		t.Error("/p/one and /p/one/ should be the same project")
 	}
 }

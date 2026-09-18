@@ -3,9 +3,11 @@ package ui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
-const helpText = "j/k move · n/N hunk · J/K file · t toggle view · +/- context · tab focus · ⏎ open · q quit"
+const helpText = "j/k move · / find · ctrl-e/y scroll diff · n/N hunk · J/K file · t toggle · tab focus · q quit"
 
 // View renders the whole panel. It never exceeds the terminal's bounds: the
 // panel shares a window with Claude Code and must not reflow it.
@@ -23,16 +25,60 @@ func (m *Model) View() string {
 		lines = append(lines, m.paneLines(body)...)
 	}
 
-	help := helpText
-	if m.focus == focusDiff {
-		help = "diff focused · " + help
-	}
-	lines = append(lines, styHelp.Render(truncateVisible(help, m.width)))
+	lines = append(lines, m.footer())
 
 	if len(lines) > m.height {
 		lines = lines[:m.height]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// footer is the help line, or the filter prompt while one is being typed.
+func (m *Model) footer() string {
+	if m.filtering {
+		return m.promptLine()
+	}
+	help := helpText
+	if m.focus == focusDiff {
+		help = "diff focused · " + help
+	}
+	return styHelp.Render(truncateVisible(help, m.width))
+}
+
+// promptLine shows what has been typed and how much of the list survived it.
+func (m *Model) promptLine() string {
+	left := truncateVisible("/ "+m.filter+"█", m.width)
+	right := truncateVisible(
+		fmt.Sprintf("%d of %d", m.matchCount(), len(m.sess.Events)),
+		maxInt(0, m.width-VisibleWidth(left)-1))
+	gap := maxInt(0, m.width-VisibleWidth(left)-VisibleWidth(right))
+
+	return styIntent.Render(left) + strings.Repeat(" ", gap) + styDim.Render(right)
+}
+
+// matchCount is how many edits the filter keeps, headings aside.
+func (m *Model) matchCount() int {
+	n := 0
+	for _, e := range m.sess.Events {
+		if _, _, ok := Match(m.filter, e.Rel); ok {
+			n++
+		}
+	}
+	return n
+}
+
+// rowUnread reports whether a row still has something to read. A file heading
+// stands for every edit beneath it.
+func (m *Model) rowUnread(r Row) bool {
+	if r.Kind == RowFileHeader {
+		for _, e := range m.sess.Events {
+			if e.Rel == r.Rel && !m.seen[e.Seq] {
+				return true
+			}
+		}
+		return false
+	}
+	return r.Event != nil && !m.seen[r.Event.Seq]
 }
 
 // paneLines renders the list and diff side by side.
@@ -42,7 +88,8 @@ func (m *Model) paneLines(height int) []string {
 
 	m.scrollListIntoView(height)
 	list := m.listLines(height, lw)
-	diff := m.renderDiff().Lines
+	diff := m.renderDiff()
+	focused := m.focus == focusDiff
 
 	out := make([]string, 0, height)
 	for i := 0; i < height; i++ {
@@ -50,12 +97,19 @@ func (m *Model) paneLines(height int) []string {
 		if i < len(list) {
 			left = list[i]
 		}
+
 		right := ""
-		if j := m.diffTop + i; j >= 0 && j < len(diff) {
-			right = diff[j]
+		if j := m.diffTop + i; j >= 0 && j < len(diff.Lines) {
+			// Padding first: a wash has to reach the edge of the pane, not stop
+			// where the code happens to end.
+			right = padVisible(truncateStyled(diff.Lines[j], dw), dw)
+			if bg := diffBackground(diff.Kinds[j], j == m.diffCursor, focused); bg != "" {
+				right = withBackground(stripBackground(right), bg)
+			}
 		}
+
 		left = padVisible(left, lw)
-		out = append(out, left+" "+styBorder.Render("│")+" "+truncateStyled(right, dw))
+		out = append(out, left+" "+styBorder.Render("│")+" "+right)
 	}
 	return out
 }
@@ -84,21 +138,28 @@ func (m *Model) listLines(height, width int) []string {
 func (m *Model) listRow(i, width int) string {
 	r := m.rows[i]
 	selected := i == m.cursor
+	unread := m.rowUnread(r)
 
-	marker := "  "
+	// Two marker columns: where the cursor is, and whether this is still unread.
+	cursor, dot := " ", " "
 	if selected {
-		marker = "▸ "
+		cursor = "▸"
 	}
+	if unread {
+		dot = "●"
+	}
+	marker := cursor + dot + " "
 
 	var label string
+	var match []int
 	switch r.Kind {
 	case RowFileHeader:
-		label = fmt.Sprintf("%s (%d)", r.Rel, r.Edits)
+		label, match = fmt.Sprintf("%s (%d)", r.Rel, r.Edits), r.Match
 	default:
 		if m.view == ByFile {
 			label = "  " + r.Event.Time.Format("15:04:05")
 		} else {
-			label = r.Rel
+			label, match = r.Rel, r.Match
 		}
 	}
 
@@ -108,18 +169,55 @@ func (m *Model) listRow(i, width int) string {
 		room = 4
 	}
 	label = truncateVisible(label, room)
+	match = trimMatches(match, len([]rune(label)))
 
-	line := marker + label
-	line += strings.Repeat(" ", maxInt(0, width-VisibleWidth(line)-VisibleWidth(stripANSI(stat))))
-	line += stat
+	// Read edits recede; unread ones keep the terminal's own foreground.
+	base := styRow
+	switch {
+	case selected:
+		base = stySelected
+	case r.Kind == RowFileHeader:
+		base = styHeading
+	case !unread:
+		base = styDim
+	}
 
-	if selected {
-		return stySelected.Render(stripANSI(line))
+	pad := maxInt(0, width-VisibleWidth(marker)-VisibleWidth(label)-VisibleWidth(stripANSI(stat)))
+	return base.Render(marker) + highlight(label, match, base) + strings.Repeat(" ", pad) + stat
+}
+
+// highlight underlines the characters the filter matched, on top of whatever
+// style the row already wears, so the marks survive selection and dimming alike.
+func highlight(label string, match []int, base lipgloss.Style) string {
+	if len(match) == 0 {
+		return base.Render(label)
 	}
-	if r.Kind == RowFileHeader {
-		return styHeading.Render(stripANSI(marker + label)) + line[len(marker+label):]
+	hit := make(map[int]bool, len(match))
+	for _, p := range match {
+		hit[p] = true
 	}
-	return line
+
+	marked := base.Underline(true).Bold(true)
+	var b strings.Builder
+	for i, r := range []rune(label) {
+		if hit[i] {
+			b.WriteString(marked.Render(string(r)))
+			continue
+		}
+		b.WriteString(base.Render(string(r)))
+	}
+	return b.String()
+}
+
+// trimMatches drops positions past the end of a truncated label.
+func trimMatches(match []int, n int) []int {
+	out := match[:0:0]
+	for _, p := range match {
+		if p < n {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func shortCounts(added, removed int) string {
@@ -146,14 +244,18 @@ func (m *Model) waitingLines(height int) []string {
 func (m *Model) helpLines(height int) []string {
 	rows := [][2]string{
 		{"j / k", "move down / up"},
+		{"/", "filter by file name (⏎ keep, esc clear)"},
+		{"ctrl-n / ctrl-p", "move while the filter prompt is open"},
 		{"ctrl-d / ctrl-u", "half page down / up"},
+		{"ctrl-e / ctrl-y", "scroll the diff a line, either pane focused"},
+		{"ctrl-f / ctrl-b", "scroll the diff a page, either pane focused"},
 		{"gg / G", "first / last"},
 		{"n / N", "next / previous hunk"},
 		{"J / K", "next / previous file"},
 		{"t", "toggle view (timeline ⇄ by file)"},
 		{"+ / -", "more / less surrounding context"},
-		{"tab", "move focus between list and diff"},
-		{"enter", "open the file in your editor"},
+		{"tab", "move focus between list and diff (the diff gets a cursor)"},
+		{"●", "an edit you have not looked at yet"},
 		{"?", "close this help"},
 		{"q", "quit and clear this session"},
 	}

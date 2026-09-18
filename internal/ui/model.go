@@ -31,18 +31,23 @@ type Model struct {
 	sessionID string
 	store     *store.Store
 
-	sess store.Session
-	rows []Row
-	view View
+	sess   store.Session
+	rows   []Row
+	view   View
+	filter string
 
-	cursor  int // index into rows
-	listTop int // first visible list row
-	diffTop int // first visible diff line
-	ctx     int // how much surrounding context to show
-	focus   focus
+	seen map[int]bool // sequence numbers of edits already read
+
+	cursor     int // index into rows
+	listTop    int // first visible list row
+	diffTop    int // first visible diff line
+	diffCursor int // the line the diff cursor sits on
+	ctx        int // how much surrounding context to show
+	focus      focus
 
 	width, height int
 	pendingG      bool
+	filtering     bool // the filter prompt has the keyboard
 	showHelp      bool
 	diff          Rendered
 	dirty         bool // the diff needs re-rendering
@@ -60,6 +65,7 @@ func New(sessionID string) (*Model, error) {
 		ctx:       defaultCtx,
 		width:     100,
 		height:    30,
+		filtering: true, // the panel opens ready to search
 	}
 	m.Reload()
 	return m, nil
@@ -67,7 +73,7 @@ func New(sessionID string) (*Model, error) {
 
 // NewForTest builds a panel over an in-memory session, touching no disk.
 func NewForTest(sess store.Session) *Model {
-	m := &Model{ctx: defaultCtx, width: 100, height: 30}
+	m := &Model{ctx: defaultCtx, width: 100, height: 30, filtering: true}
 	m.setSession(sess)
 	return m
 }
@@ -77,8 +83,62 @@ func (m *Model) setSession(sess store.Session) {
 		sess.Prompts = map[string]string{}
 	}
 	m.sess = sess
+	m.adoptSeen(sess.Seen)
 	m.rebuild()
 }
+
+// adoptSeen folds what the session already knows was read into this panel's
+// view of it. A reopened popup must not present everything as new again.
+func (m *Model) adoptSeen(seen map[int]bool) {
+	if m.seen == nil {
+		m.seen = map[int]bool{}
+	}
+	for seq := range seen {
+		m.seen[seq] = true
+	}
+}
+
+// markSelectedRead records the edit under the cursor as read. The panel is for
+// reading, so landing on an edit is what reads it.
+func (m *Model) markSelectedRead() {
+	r := m.selected()
+	if r == nil || r.Kind != RowEvent || r.Event == nil {
+		return
+	}
+	seq := r.Event.Seq
+	if seq <= 0 || m.seen[seq] {
+		return
+	}
+	if m.seen == nil {
+		m.seen = map[int]bool{}
+	}
+	m.seen[seq] = true
+	if m.store != nil {
+		if err := m.store.MarkSeen(seq); err != nil {
+			return // read state is a convenience; losing a mark is not fatal
+		}
+	}
+}
+
+// IsRead reports whether an edit has already been read.
+func (m *Model) IsRead(seq int) bool { return m.seen[seq] }
+
+// Unread is how many edits have never been selected.
+func (m *Model) Unread() int {
+	n := 0
+	for _, e := range m.sess.Events {
+		if !m.seen[e.Seq] {
+			n++
+		}
+	}
+	return n
+}
+
+// Filter is the current file-name query, empty when the whole list is shown.
+func (m *Model) Filter() string { return m.filter }
+
+// Filtering reports whether the filter prompt holds the keyboard.
+func (m *Model) Filtering() bool { return m.filtering }
 
 // rebuild recomputes rows, holding the selection where it was.
 //
@@ -91,11 +151,12 @@ func (m *Model) rebuild() {
 		wantKind = r.Kind
 	}
 
-	m.rows = BuildRows(m.sess, m.view)
+	m.rows = BuildRows(m.sess, m.view, m.filter)
 	m.dirty = true
 
 	if wantSeq == 0 && wantRel == "" {
 		m.clampCursor()
+		m.markSelectedRead()
 		return
 	}
 	for i, r := range m.rows {
@@ -106,6 +167,7 @@ func (m *Model) rebuild() {
 			if r.Rel == wantRel {
 				m.cursor = i
 				m.clampCursor()
+				m.markSelectedRead()
 				return
 			}
 			continue
@@ -113,10 +175,12 @@ func (m *Model) rebuild() {
 		if r.Event != nil && r.Event.Seq == wantSeq {
 			m.cursor = i
 			m.clampCursor()
+			m.markSelectedRead()
 			return
 		}
 	}
 	m.clampCursor()
+	m.markSelectedRead()
 }
 
 // Reload re-reads the log. New events never move the selection.
@@ -132,6 +196,7 @@ func (m *Model) Reload() {
 	if m.sess.Prompts == nil {
 		m.sess.Prompts = map[string]string{}
 	}
+	m.adoptSeen(sess.Seen)
 	m.rebuild()
 }
 
@@ -213,6 +278,12 @@ func (m *Model) RowCount() int { return len(m.rows) }
 // DiffTop is the first visible line of the diff pane.
 func (m *Model) DiffTop() int { return m.diffTop }
 
+// DiffCursor is the diff line the cursor sits on.
+func (m *Model) DiffCursor() int { return m.diffCursor }
+
+// BodyHeight is how many rows the panes have to work with.
+func (m *Model) BodyHeight() int { return m.bodyHeight() }
+
 // ListFocused reports whether motions act on the list.
 func (m *Model) ListFocused() bool { return m.focus == focusList }
 
@@ -230,6 +301,24 @@ func keyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "ctrl+d":
 		return tea.KeyMsg{Type: tea.KeyCtrlD}
+	case "ctrl+n":
+		return tea.KeyMsg{Type: tea.KeyCtrlN}
+	case "ctrl+j":
+		return tea.KeyMsg{Type: tea.KeyCtrlJ}
+	case "ctrl+k":
+		return tea.KeyMsg{Type: tea.KeyCtrlK}
+	case "ctrl+e":
+		return tea.KeyMsg{Type: tea.KeyCtrlE}
+	case "ctrl+y":
+		return tea.KeyMsg{Type: tea.KeyCtrlY}
+	case "ctrl+f":
+		return tea.KeyMsg{Type: tea.KeyCtrlF}
+	case "ctrl+b":
+		return tea.KeyMsg{Type: tea.KeyCtrlB}
+	case "ctrl+p":
+		return tea.KeyMsg{Type: tea.KeyCtrlP}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "ctrl+u":
 		return tea.KeyMsg{Type: tea.KeyCtrlU}
 	case "esc":
@@ -300,7 +389,11 @@ func (m *Model) statusLine() string {
 	if m.sess.Meta.Ended {
 		state = styDim.Render("  (session ended)")
 	}
-	return styHeading.Render(name) + styDim.Render(fmt.Sprintf("  %d edits · %s", len(m.sess.Events), m.view)) + state
+	counts := fmt.Sprintf("  %d edits · %s", len(m.sess.Events), m.view)
+	if n := m.Unread(); n > 0 {
+		counts += fmt.Sprintf(" · %d unread", n)
+	}
+	return styHeading.Render(name) + styDim.Render(counts) + state
 }
 
 func shortPath(p string) string {

@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// ErrNoTmux means no tmux pane could be found to split. It is not a failure
-// worth disturbing a session over — capture continues either way.
-var ErrNoTmux = errors.New("pane: no tmux pane to split")
+// ErrNoTmux means no tmux pane could be found to host the popup. It is not a
+// failure worth disturbing a session over — capture continues either way.
+var ErrNoTmux = errors.New("pane: no tmux pane to open a popup over")
 
 // target finds the tmux pane the Claude session is running in.
 //
@@ -26,6 +26,9 @@ func target() (string, error) {
 
 	tty := controllingTTY()
 	if tty == "" {
+		if id := paneFromServer(); id != "" {
+			return id, nil
+		}
 		return "", fmt.Errorf("%w: no controlling terminal", ErrNoTmux)
 	}
 
@@ -33,11 +36,27 @@ func target() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: listing panes: %v", ErrNoTmux, err)
 	}
-	id, ok := matchPaneByTTY(string(out), tty)
-	if !ok {
-		return "", fmt.Errorf("%w: %s is not a tmux pane", ErrNoTmux, tty)
+	if id, ok := matchPaneByTTY(string(out), tty); ok {
+		return id, nil
 	}
-	return id, nil
+	if id := paneFromServer(); id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf("%w: %s is not a tmux pane", ErrNoTmux, tty)
+}
+
+// paneFromServer asks tmux which pane is current.
+//
+// A key binding's command is run by the tmux server, so it inherits $TMUX but
+// no $TMUX_PANE, and has no terminal of its own to trace back. tmux still knows
+// what the client was looking at. It is the last route tried: with several
+// clients attached, "current" is the server's guess, while a terminal is proof.
+func paneFromServer() string {
+	out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // matchPaneByTTY picks the pane owning a terminal out of tmux's listing.

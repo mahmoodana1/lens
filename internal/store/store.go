@@ -11,6 +11,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,9 +25,13 @@ const (
 	eventsFile  = "events.jsonl"
 	promptsFile = "prompts.jsonl"
 	metaFile    = "meta.json"
-	// PaneFile records the tmux pane showing this session, and doubles as the
-	// spawn lock.
-	PaneFile = "pane"
+	seenFile    = "seen"
+	// announcedFile records the highest edit the panel has been opened for, so
+	// a turn that changed nothing does not reopen it.
+	announcedFile = "announced"
+	// autoOpenFile lists the projects whose panel must not open by itself, one
+	// path per line. A project missing from it opens normally.
+	autoOpenFile = "auto-open-off"
 )
 
 // Meta describes the session itself.
@@ -40,6 +47,8 @@ type Session struct {
 	Meta    Meta
 	Events  []capture.Event
 	Prompts map[string]string
+	// Seen holds the sequence numbers of edits that have already been read.
+	Seen map[int]bool
 }
 
 // Store is a handle on one session's directory.
@@ -190,7 +199,7 @@ func (s *Store) MarkEnded() error {
 // Read loads the whole session. Lines that fail to parse are skipped, so a
 // half-written tail from an interrupted hook costs at most its own event.
 func (s *Store) Read() (Session, error) {
-	out := Session{Prompts: map[string]string{}}
+	out := Session{Prompts: map[string]string{}, Seen: map[int]bool{}}
 
 	if err := readJSON(filepath.Join(s.dir, metaFile), &out.Meta); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return out, err
@@ -217,7 +226,151 @@ func (s *Store) Read() (Session, error) {
 		return out, err
 	}
 
+	seen, err := readSeen(filepath.Join(s.dir, seenFile))
+	if err != nil {
+		return out, err
+	}
+	out.Seen = seen
+
 	return out, nil
+}
+
+// MarkSeen records that an edit has been read. Landing on a row is what marks
+// it, so this runs on every cursor move: it stays a no-op once the number is
+// already on file.
+func (s *Store) MarkSeen(seq int) error {
+	if seq <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.dir, seenFile)
+	seen, err := readSeen(path)
+	if err != nil {
+		return err
+	}
+	if seen[seq] {
+		return nil
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("store: open seen: %w", err)
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintf(f, "%d\n", seq); err != nil {
+		return fmt.Errorf("store: append seen: %w", err)
+	}
+	return nil
+}
+
+// readSeen loads the read-state set. A missing file simply means nothing has
+// been read yet.
+func readSeen(path string) (map[int]bool, error) {
+	seen := map[int]bool{}
+	err := eachLine(path, func(b []byte) {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil {
+			seen[n] = true
+		}
+	})
+	return seen, err
+}
+
+// Announce records the highest edit the panel has been opened for.
+//
+// It is written when the panel is opened for a turn rather than when the reader
+// actually looks: the question it answers is "has this edit already been put in
+// front of them", and a popup they dismissed still counts.
+func (s *Store) Announce(seq int) error {
+	if seq <= 0 {
+		return nil
+	}
+	path := filepath.Join(s.dir, announcedFile)
+	if err := os.WriteFile(path, []byte(strconv.Itoa(seq)+"\n"), 0o600); err != nil {
+		return fmt.Errorf("store: write announced: %w", err)
+	}
+	return nil
+}
+
+// Announced is the highest edit the panel has already been opened for.
+func (s *Store) Announced() (int, error) {
+	b, err := os.ReadFile(filepath.Join(s.dir, announcedFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: read announced: %w", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0, nil // an unreadable marker means nothing has been announced
+	}
+	return n, nil
+}
+
+// AutoOpen reports whether the panel may open itself for a project when Claude
+// finishes. The preference is per project and outlives any one session.
+func AutoOpen(project string) bool {
+	return !mutedProjects()[projectKey(project)]
+}
+
+// SetAutoOpen turns the automatic popup on or off for one project.
+func SetAutoOpen(project string, on bool) error {
+	muted := mutedProjects()
+	key := projectKey(project)
+	if on {
+		delete(muted, key)
+	} else {
+		muted[key] = true
+	}
+
+	if len(muted) == 0 {
+		if err := os.Remove(filepath.Join(Root(), autoOpenFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("store: clear auto-open: %w", err)
+		}
+		return nil
+	}
+
+	keys := make([]string, 0, len(muted))
+	for k := range muted {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // a stable file is a readable one
+
+	if err := os.MkdirAll(Root(), 0o700); err != nil {
+		return fmt.Errorf("store: write auto-open: %w", err)
+	}
+	body := strings.Join(keys, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(Root(), autoOpenFile), []byte(body), 0o600); err != nil {
+		return fmt.Errorf("store: write auto-open: %w", err)
+	}
+	return nil
+}
+
+// ToggleAutoOpen flips one project's setting and reports where it landed.
+func ToggleAutoOpen(project string) (bool, error) {
+	on := !AutoOpen(project)
+	return on, SetAutoOpen(project, on)
+}
+
+// mutedProjects is the set of projects whose panel stays closed.
+func mutedProjects() map[string]bool {
+	muted := map[string]bool{}
+	eachLine(filepath.Join(Root(), autoOpenFile), func(b []byte) {
+		if line := strings.TrimSpace(string(b)); line != "" {
+			muted[line] = true
+		}
+	})
+	return muted
+}
+
+// projectKey normalises a project directory so "/p" and "/p/" are one project.
+func projectKey(project string) string {
+	if project == "" {
+		return ""
+	}
+	return filepath.Clean(project)
 }
 
 // Destroy removes the session from disk.

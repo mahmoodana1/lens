@@ -1,17 +1,33 @@
 package ui
 
 import (
-	"os"
-	"os/exec"
-	"strings"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mahmood/lens/internal/capture"
 )
 
 // handleKey implements the motions. The list has focus by default; Tab hands it
 // to the diff, where j and k scroll instead of changing the selection.
+//
+// A held key does not arrive one press at a time: the terminal coalesces the
+// repeats and bubbletea delivers them as a single message carrying every rune.
+// Those are dispatched individually, so holding j scrolls instead of matching
+// nothing and sitting still.
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
+		var cmd tea.Cmd
+		for _, r := range msg.Runes {
+			one := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt}
+			if _, c := m.handleKey(one); c != nil {
+				cmd = c
+			}
+		}
+		return m, cmd
+	}
+
+	if m.filtering {
+		return m.handleFilterKey(msg)
+	}
+
 	key := msg.String()
 
 	// gg is the only chord, so a pending g is tracked directly.
@@ -40,6 +56,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveDown(m.bodyHeight() / 2)
 	case "ctrl+u":
 		m.moveUp(m.bodyHeight() / 2)
+	// The diff scrolls under these whichever pane has focus, so a long hunk can
+	// be read without tabbing away from the list first.
+	case "ctrl+e":
+		m.scrollDiff(1)
+	case "ctrl+y":
+		m.scrollDiff(-1)
+	case "ctrl+f":
+		m.scrollDiff(m.bodyHeight())
+	case "ctrl+b":
+		m.scrollDiff(-m.bodyHeight())
 	case "n":
 		m.jumpHunk(1)
 	case "N":
@@ -60,63 +86,156 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.focus = focusList
 		}
-	case "enter":
-		m.openInEditor()
+	case "/":
+		m.filtering = true
 	case "esc":
 		m.showHelp = false
+		m.setFilter("")
 	}
 	return m, nil
 }
 
+// handleFilterKey drives the file-name prompt. Every printable key is a
+// character while it is open — otherwise there would be no way to type a file
+// called "j" — so the motions come back only on enter or esc.
+func (m *Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.filtering = false
+		m.setFilter("")
+	case tea.KeyEnter:
+		m.filtering = false
+	case tea.KeyBackspace:
+		if q := []rune(m.filter); len(q) > 0 {
+			m.setFilter(string(q[:len(q)-1]))
+		}
+	// Picking a file without leaving the prompt, as fzf does.
+	case tea.KeyCtrlN, tea.KeyCtrlJ, tea.KeyDown:
+		m.moveCursor(1)
+	case tea.KeyCtrlP, tea.KeyCtrlK, tea.KeyUp:
+		m.moveCursor(-1)
+	case tea.KeyRunes:
+		m.setFilter(m.filter + string(msg.Runes))
+	}
+	return m, nil
+}
+
+// setFilter narrows the list and puts the cursor on the best match, so the
+// selection follows what you are typing instead of holding a stale index.
+func (m *Model) setFilter(q string) {
+	if q == m.filter {
+		return
+	}
+	m.filter = q
+	m.rows = BuildRows(m.sess, m.view, m.filter)
+	m.cursor = BestMatch(m.rows, m.filter)
+	m.clampCursor()
+	m.onSelectionChange()
+	m.markSelectedRead()
+}
+
 func (m *Model) toTop() {
 	if m.focus == focusDiff {
-		m.diffTop = 0
+		m.setDiffCursor(0)
 		return
 	}
 	m.cursor = 0
 	m.onSelectionChange()
+	m.markSelectedRead()
 }
 
 func (m *Model) toBottom() {
 	if m.focus == focusDiff {
-		m.diffTop = m.maxDiffTop()
+		m.setDiffCursor(m.diffLen() - 1)
 		return
 	}
 	m.cursor = len(m.rows) - 1
 	m.clampCursor()
 	m.onSelectionChange()
+	m.markSelectedRead()
 }
 
 func (m *Model) moveDown(n int) {
 	if m.focus == focusDiff {
-		m.diffTop += n
-		if max := m.maxDiffTop(); m.diffTop > max {
-			m.diffTop = max
-		}
+		m.setDiffCursor(m.diffCursor + n)
 		return
 	}
-	m.cursor += n
-	m.clampCursor()
-	m.onSelectionChange()
+	m.moveCursor(n)
 }
 
 func (m *Model) moveUp(n int) {
 	if m.focus == focusDiff {
-		m.diffTop -= n
-		if m.diffTop < 0 {
-			m.diffTop = 0
-		}
+		m.setDiffCursor(m.diffCursor - n)
 		return
 	}
-	m.cursor -= n
-	m.clampCursor()
-	m.onSelectionChange()
+	m.moveCursor(-n)
 }
 
-// onSelectionChange resets the diff scroll so a new edit starts from the top.
+// moveCursor moves the list selection and reads whatever it lands on.
+func (m *Model) moveCursor(n int) {
+	m.cursor += n
+	m.clampCursor()
+	m.onSelectionChange()
+	m.markSelectedRead()
+}
+
+// onSelectionChange resets the diff so a new edit starts from its first line.
 func (m *Model) onSelectionChange() {
-	m.diffTop = 0
+	m.diffTop, m.diffCursor = 0, 0
 	m.dirty = true
+}
+
+// diffLen is how many lines the diff under the cursor has.
+func (m *Model) diffLen() int { return len(m.renderDiff().Lines) }
+
+// setDiffCursor puts the diff cursor on a line and brings it into view.
+func (m *Model) setDiffCursor(line int) {
+	last := m.diffLen() - 1
+	if line > last {
+		line = last
+	}
+	if line < 0 {
+		line = 0
+	}
+	m.diffCursor = line
+	m.scrollDiffIntoView()
+}
+
+// scrollDiffIntoView keeps the diff cursor on screen.
+func (m *Model) scrollDiffIntoView() {
+	h := m.bodyHeight()
+	if m.diffCursor < m.diffTop {
+		m.diffTop = m.diffCursor
+	}
+	if m.diffCursor >= m.diffTop+h {
+		m.diffTop = m.diffCursor - h + 1
+	}
+	m.clampDiffTop()
+}
+
+// scrollDiff scrolls the diff without taking focus, dragging the cursor along
+// only when it would otherwise be left off the screen.
+func (m *Model) scrollDiff(n int) {
+	m.diffTop += n
+	m.clampDiffTop()
+
+	if m.diffCursor < m.diffTop {
+		m.diffCursor = m.diffTop
+	}
+	if h := m.bodyHeight(); m.diffCursor >= m.diffTop+h {
+		m.diffCursor = m.diffTop + h - 1
+	}
+}
+
+func (m *Model) clampDiffTop() {
+	if max := m.maxDiffTop(); m.diffTop > max {
+		m.diffTop = max
+	}
+	if m.diffTop < 0 {
+		m.diffTop = 0
+	}
 }
 
 func (m *Model) maxDiffTop() int {
@@ -127,7 +246,7 @@ func (m *Model) maxDiffTop() int {
 	return n
 }
 
-// jumpHunk scrolls the diff to the next or previous hunk.
+// jumpHunk moves the diff cursor to the next or previous hunk.
 func (m *Model) jumpHunk(dir int) {
 	starts := m.renderDiff().HunkStarts
 	if len(starts) == 0 {
@@ -135,20 +254,20 @@ func (m *Model) jumpHunk(dir int) {
 	}
 	if dir > 0 {
 		for _, s := range starts {
-			if s > m.diffTop {
-				m.diffTop = s
+			if s > m.diffCursor {
+				m.setDiffCursor(s)
 				return
 			}
 		}
 		return
 	}
 	for i := len(starts) - 1; i >= 0; i-- {
-		if starts[i] < m.diffTop {
-			m.diffTop = starts[i]
+		if starts[i] < m.diffCursor {
+			m.setDiffCursor(starts[i])
 			return
 		}
 	}
-	m.diffTop = 0
+	m.setDiffCursor(0)
 }
 
 // jumpFile moves the selection to the next or previous file in the list.
@@ -158,6 +277,7 @@ func (m *Model) jumpFile(dir int) {
 		if m.rows[i].Rel != cur {
 			m.cursor = i
 			m.onSelectionChange()
+			m.markSelectedRead()
 			return
 		}
 	}
@@ -182,52 +302,4 @@ func (m *Model) setCtx(n int) {
 	}
 	m.ctx = n
 	m.dirty = true
-}
-
-// openInEditor opens the selected file at the hunk under the cursor.
-func (m *Model) openInEditor() {
-	r := m.selected()
-	if r == nil || r.Event == nil || r.Event.Path == "" {
-		return
-	}
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "nvim"
-	}
-	line := 1
-	if len(r.Event.Hunks) > 0 {
-		line = r.Event.Hunks[0].NewStart
-		if line < 1 {
-			line = 1
-		}
-	}
-
-	// Open in a new tmux window so the panel keeps its pane.
-	if os.Getenv("TMUX") != "" {
-		exec.Command("tmux", "new-window", "--",
-			editor, "+"+itoa(line), r.Event.Path).Run()
-		return
-	}
-	exec.Command(editor, "+"+itoa(line), r.Event.Path).Run()
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b strings.Builder
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var digits []byte
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	if neg {
-		b.WriteByte('-')
-	}
-	b.Write(digits)
-	return b.String()
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/mahmood/lens/internal/capture"
 	"github.com/mahmood/lens/internal/difftext"
 	"github.com/mahmood/lens/internal/fsindex"
-	"github.com/mahmood/lens/internal/pane"
 	"github.com/mahmood/lens/internal/store"
 )
 
@@ -96,7 +95,6 @@ func bashChanges(env envelope) error {
 		}
 	}
 
-	notePaneFailure(s, pane.Ensure(env.SessionID, self()))
 	return nil
 }
 

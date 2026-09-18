@@ -37,30 +37,60 @@ type Row struct {
 	Rel     string
 	Added   int
 	Removed int
-	Edits   int // file headers only
+	Edits   int   // file headers only
+	Match   []int // positions in Rel matched by the filter, for highlighting
 }
 
-// BuildRows lays a session out for the given view.
-func BuildRows(s store.Session, v View) []Row {
-	if len(s.Events) == 0 {
+// BuildRows lays a session out for the given view, keeping only the files the
+// filter matches. The order is the view's own — narrowing the list must not
+// reshuffle a timeline — so the ranking instead decides where the cursor lands.
+func BuildRows(s store.Session, v View, filter string) []Row {
+	kept := make([]*capture.Event, 0, len(s.Events))
+	for i := range s.Events {
+		if _, _, ok := Match(filter, s.Events[i].Rel); ok {
+			kept = append(kept, &s.Events[i])
+		}
+	}
+	if len(kept) == 0 {
 		return nil
 	}
 	if v == ByFile {
-		return byFileRows(s)
+		return byFileRows(kept, filter)
 	}
 
-	rows := make([]Row, 0, len(s.Events))
-	for i := range s.Events {
-		e := &s.Events[i]
+	rows := make([]Row, 0, len(kept))
+	for _, e := range kept {
 		rows = append(rows, Row{
 			Kind: RowEvent, Event: e, Rel: e.Rel,
 			Added: e.Added, Removed: e.Removed,
+			Match: matchPositions(filter, e.Rel),
 		})
 	}
 	return rows
 }
 
-func byFileRows(s store.Session) []Row {
+// BestMatch is the index of the row the filter ranks highest, or 0 when there
+// is nothing to rank. It is where the cursor goes as you type.
+func BestMatch(rows []Row, filter string) int {
+	if filter == "" {
+		return 0
+	}
+	best, bestScore := 0, 0
+	for i, r := range rows {
+		_, score, ok := Match(filter, r.Rel)
+		if ok && score > bestScore {
+			best, bestScore = i, score
+		}
+	}
+	return best
+}
+
+func matchPositions(filter, rel string) []int {
+	pos, _, _ := Match(filter, rel)
+	return pos
+}
+
+func byFileRows(events []*capture.Event, filter string) []Row {
 	type group struct {
 		added, removed int
 		events         []*capture.Event
@@ -68,8 +98,7 @@ func byFileRows(s store.Session) []Row {
 	order := []string{}
 	groups := map[string]*group{}
 
-	for i := range s.Events {
-		e := &s.Events[i]
+	for _, e := range events {
 		g, ok := groups[e.Rel]
 		if !ok {
 			g = &group{}
@@ -81,17 +110,19 @@ func byFileRows(s store.Session) []Row {
 		g.events = append(g.events, e)
 	}
 
-	rows := make([]Row, 0, len(s.Events)+len(order))
+	rows := make([]Row, 0, len(events)+len(order))
 	for _, rel := range order {
 		g := groups[rel]
 		rows = append(rows, Row{
 			Kind: RowFileHeader, Rel: rel, Event: g.events[0],
 			Added: g.added, Removed: g.removed, Edits: len(g.events),
+			Match: matchPositions(filter, rel),
 		})
 		for _, e := range g.events {
 			rows = append(rows, Row{
 				Kind: RowEvent, Event: e, Rel: e.Rel,
 				Added: e.Added, Removed: e.Removed,
+				Match: matchPositions(filter, e.Rel),
 			})
 		}
 	}

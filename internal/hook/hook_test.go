@@ -352,3 +352,68 @@ func summarize(events []capture.Event) []string {
 	}
 	return out
 }
+
+// noPanelMarker is where a failed attempt to open the panel is recorded. With
+// no tmux reachable, its presence is how these tests see that lens tried.
+func noPanelMarker(id string) string {
+	return filepath.Join(store.Dir(id), "pane-unavailable")
+}
+
+// isolateFromTmux puts the tests out of reach of any real tmux server, so a
+// stray popup can never land in the developer's own session.
+func isolateFromTmux(t *testing.T) {
+	t.Helper()
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("PATH", t.TempDir())
+}
+
+// Recording is silent. The panel opens when Claude stops, not part-way through
+// an edit, so nothing interrupts a turn in progress.
+func TestPostToolUse_DoesNotOpenThePanel(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+	raw := fixtureFor(t, "PostToolUse", "Edit")
+
+	if err := hook.PostToolUse(bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(noPanelMarker(sessionIDOf(t, raw))); err == nil {
+		t.Error("PostToolUse tried to open the panel; it must only record")
+	}
+}
+
+// Claude answered a question without touching a file: there is nothing to show.
+func TestStop_WithNoEditsOpensNothing(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+	store.Open("s-quiet")
+
+	if err := hook.Stop(bytes.NewReader(payload(map[string]any{"session_id": "s-quiet"}))); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(noPanelMarker("s-quiet")); err == nil {
+		t.Error("panel opened for a session with no edits")
+	}
+}
+
+// Claude finished and did change something, so the panel opens over the session.
+func TestStop_WithEditsOpensThePanel(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+	raw := fixtureFor(t, "PostToolUse", "Edit")
+	if err := hook.PostToolUse(bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	id := sessionIDOf(t, raw)
+
+	if err := hook.Stop(bytes.NewReader(payload(map[string]any{"session_id": id}))); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(noPanelMarker(id)); err != nil {
+		t.Error("Stop did not try to open the panel for a session with edits")
+	}
+}

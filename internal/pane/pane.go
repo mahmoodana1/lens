@@ -1,62 +1,41 @@
-// Package pane opens the panel in a tmux pane beside the Claude session.
+// Package pane opens the panel in a tmux popup over the Claude session.
 package pane
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
-
-	"github.com/mahmood/lens/internal/store"
+	"syscall"
 )
 
-// Ensure opens the panel for a session exactly once.
+// The panel is a reading surface, so the popup takes most of the window while
+// staying an overlay: the session it covers is still visible around the edges.
+const (
+	popupWidth  = "90%"
+	popupHeight = "85%"
+	popupTitle  = " lens "
+)
+
+// Open shows the panel for a session in a tmux popup.
 //
-// It is a no-op outside tmux, and a no-op once a pane exists. Claude runs tools
-// in parallel, so several hooks can race here; the pane file is created with
-// O_EXCL and whichever process creates it is the one that spawns.
-func Ensure(sessionID, self string) error {
+// A popup holds the client's keyboard for as long as it lives, which is what
+// makes the panel scrollable the moment it appears — no pane to switch to
+// first. tmux does not return until the popup is dismissed, so the spawn is
+// detached: a hook must come back promptly however long the reader stays.
+func Open(sessionID, self string) error {
 	dest, err := target()
 	if err != nil {
 		return err
 	}
 
-	lock := filepath.Join(store.Dir(sessionID), store.PaneFile)
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil // another hook already opened the panel
-		}
-		return fmt.Errorf("pane: claim spawn lock: %w", err)
-	}
-	defer f.Close()
+	cmd := exec.Command("tmux",
+		"display-popup", "-E",
+		"-w", popupWidth, "-h", popupHeight,
+		"-T", popupTitle, "-t", dest,
+		self, "--session", sessionID)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	args := []string{
-		"split-window", "-h", "-d", "-l", "45%", "-P", "-F", "#{pane_id}",
-		"-t", dest, self, "--session", sessionID,
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("pane: display-popup: %w", err)
 	}
-
-	out, err := exec.Command("tmux", args...).Output()
-	if err != nil {
-		// Leave no lock behind, so a later edit can try again.
-		os.Remove(lock)
-		return fmt.Errorf("pane: split-window: %w", err)
-	}
-
-	_, err = f.WriteString(strings.TrimSpace(string(out)) + "\n")
-	return err
-}
-
-// Close kills the panel's pane, if one is recorded.
-func Close(sessionID string) {
-	b, err := os.ReadFile(filepath.Join(store.Dir(sessionID), store.PaneFile))
-	if err != nil {
-		return
-	}
-	id := strings.TrimSpace(string(b))
-	if id == "" {
-		return
-	}
-	exec.Command("tmux", "kill-pane", "-t", id).Run()
+	return cmd.Process.Release()
 }

@@ -2,21 +2,26 @@
 //
 // It wears two hats. As a hook it records edits:
 //
-//	lens hook post-tool-use | prompt | session-end
+//	lens hook session-start | post-tool-use | prompt | stop | session-end
 //
-// As a panel it displays them:
+// As a panel it displays them, in a tmux popup over the session:
 //
-//	lens [--session ID]
+//	lens [--session ID]   the panel itself, as the popup runs it
+//	lens popup            open that popup over the current tmux pane
+//	lens auto [on|off]    whether the popup opens by itself, for this project
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mahmood/lens/internal/hook"
+	"github.com/mahmood/lens/internal/pane"
 	"github.com/mahmood/lens/internal/store"
 	"github.com/mahmood/lens/internal/ui"
 )
@@ -29,6 +34,26 @@ func main() {
 	if len(os.Args) > 2 && os.Args[1] == "hook" {
 		runHook(os.Args[2])
 		os.Exit(0)
+	}
+
+	// `lens auto` turns the automatic popup on and off. It prints where the
+	// setting landed, which is what the tmux binding shows.
+	if len(os.Args) > 1 && os.Args[1] == "auto" {
+		if err := runAuto(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lens:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// `lens popup` re-opens the panel over the session it belongs to. It is what
+	// the tmux binding runs, so it returns as soon as the popup is up.
+	if len(os.Args) > 1 && os.Args[1] == "popup" {
+		if err := runPopup(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lens:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fs := flag.NewFlagSet("lens", flag.ContinueOnError)
@@ -45,14 +70,10 @@ func main() {
 	// Sessions whose panel was never opened would otherwise linger.
 	store.Sweep(24 * time.Hour)
 
-	id := *session
-	if id == "" {
-		latest, err := latestSession()
-		if err != nil || latest == "" {
-			fmt.Fprintln(os.Stderr, "lens: no active session. It opens by itself when Claude edits a file.")
-			os.Exit(1)
-		}
-		id = latest
+	id, err := resolveSession(*session)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "lens:", err)
+		os.Exit(1)
 	}
 
 	m, err := ui.New(id)
@@ -61,16 +82,97 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The panel lives in a tmux popup, which is already its own screen.
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "lens:", err)
 		os.Exit(1)
 	}
+	// Closing the panel only closes the popup: the capture stays on disk so the
+	// tmux binding can bring it back. SessionEnd and Sweep clear it up.
+}
 
-	// Closing the panel ends the session's life on disk.
-	if s, err := store.Open(id); err == nil {
-		s.Destroy()
+// runAuto reads or flips whether the panel opens by itself for a project.
+//
+// The project defaults to the working directory, which is why the tmux binding
+// runs it from the pane's own path: a key binding's command otherwise inherits
+// the tmux server's directory, not the one you are working in.
+func runAuto(args []string) error {
+	fs := flag.NewFlagSet("lens auto", flag.ContinueOnError)
+	project := fs.String("project", "", "project directory (default: the working directory)")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
+
+	dir := *project
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("no project directory: %w", err)
+		}
+		dir = cwd
+	}
+
+	want := "toggle"
+	if fs.NArg() > 0 {
+		want = fs.Arg(0)
+	}
+
+	var on bool
+	var err error
+	switch want {
+	case "toggle":
+		on, err = store.ToggleAutoOpen(dir)
+	case "on":
+		on, err = true, store.SetAutoOpen(dir, true)
+	case "off":
+		on, err = false, store.SetAutoOpen(dir, false)
+	case "status":
+		on = store.AutoOpen(dir)
+	default:
+		return errors.New("usage: lens auto [--project DIR] [on|off|toggle|status]")
+	}
+	if err != nil {
+		return err
+	}
+
+	state := "off"
+	if on {
+		state = "on"
+	}
+	fmt.Printf("lens: auto-open %s for %s\n", state, filepath.Base(dir))
+	return nil
+}
+
+// runPopup opens the panel for a session in a tmux popup and returns.
+func runPopup(args []string) error {
+	fs := flag.NewFlagSet("lens popup", flag.ContinueOnError)
+	session := fs.String("session", "", "session to show (default: the most recent)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	id, err := resolveSession(*session)
+	if err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		self = "lens"
+	}
+	return pane.Open(id, self)
+}
+
+// resolveSession falls back to whatever Claude touched last, so `lens` in a
+// bare terminal attaches to the session in front of you.
+func resolveSession(id string) (string, error) {
+	if id != "" {
+		return id, nil
+	}
+	latest, err := latestSession()
+	if err != nil || latest == "" {
+		return "", errors.New("no active session. It opens by itself when Claude edits a file.")
+	}
+	return latest, nil
 }
 
 func runHook(name string) {
@@ -84,6 +186,8 @@ func runHook(name string) {
 		err = hook.SessionStart(os.Stdin)
 	case "session-end":
 		err = hook.SessionEnd(os.Stdin)
+	case "stop":
+		err = hook.Stop(os.Stdin)
 	default:
 		hook.Debugf("unknown hook %q", name)
 		return

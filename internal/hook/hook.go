@@ -76,8 +76,6 @@ func PostToolUse(stdin io.Reader) error {
 		Debugf("post-tool-use: note: %v", err)
 	}
 
-	// Spawning the panel is best effort; a missing panel must not fail capture.
-	notePaneFailure(s, pane.Ensure(id, self()))
 	return nil
 }
 
@@ -164,4 +162,69 @@ func truncate(b []byte) string {
 		return string(b[:max]) + "..."
 	}
 	return string(b)
+}
+
+// Stop opens the panel when Claude finishes a turn.
+//
+// Edits are recorded silently while Claude works and shown once, at the end: a
+// popup holds the keyboard, so opening one mid-turn would take the session away
+// from whoever is still talking to it.
+func Stop(stdin io.Reader) error {
+	_, env, err := read(stdin)
+	if err != nil {
+		return err
+	}
+	s, err := store.Open(env.SessionID)
+	if err != nil {
+		Debugf("stop: open store: %v", err)
+		return err
+	}
+	sess, err := s.Read()
+	if err != nil {
+		Debugf("stop: read session: %v", err)
+		return err
+	}
+	announced, err := s.Announced()
+	if err != nil {
+		Debugf("stop: read announced: %v", err)
+	}
+
+	project := sess.Meta.CWD
+	if project == "" {
+		project = env.CWD
+	}
+
+	seq, ok := shouldOpen(sess.Events, announced, store.AutoOpen(project))
+	if !ok {
+		return nil
+	}
+
+	// Recorded before opening, not after: a turn is announced once whether or
+	// not a popup could actually be shown, so a missing tmux cannot turn every
+	// later turn into a fresh attempt.
+	if err := s.Announce(seq); err != nil {
+		Debugf("stop: announce: %v", err)
+	}
+
+	// Showing the panel is best effort; a missing panel must not fail a turn.
+	notePaneFailure(s, pane.Open(env.SessionID, self()))
+	return nil
+}
+
+// shouldOpen reports whether a finished turn has anything new to show, and the
+// edit to record as announced if so.
+//
+// The test is "is there an edit the panel has not been opened for", not "does
+// this session have any edits at all" — otherwise the first edit of a session
+// would reopen the panel at the end of every later turn, including the ones
+// that only answered a question.
+func shouldOpen(events []capture.Event, announced int, autoOpen bool) (int, bool) {
+	if !autoOpen || len(events) == 0 {
+		return 0, false
+	}
+	latest := events[len(events)-1].Seq
+	if latest <= announced {
+		return 0, false
+	}
+	return latest, true
 }

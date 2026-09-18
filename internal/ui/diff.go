@@ -7,15 +7,47 @@ import (
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/mahmood/lens/internal/capture"
 )
 
-// Rendered is a laid-out diff together with the line offsets of each hunk,
-// which is what n and N jump between.
+// LineKind says how a diff line should be washed.
+type LineKind uint8
+
+const (
+	// LinePlain is anything unchanged: context, headers, the prompt.
+	LinePlain LineKind = iota
+	// LineAdd and LineDel are the lines the edit added and removed.
+	LineAdd
+	LineDel
+)
+
+// Rendered is a laid-out diff together with what each line is and the line
+// offsets of each hunk, which is what n and N jump between.
 type Rendered struct {
 	Lines      []string
+	Kinds      []LineKind
 	HunkStarts []int
+}
+
+// add appends a line of the given kind.
+func (r *Rendered) add(kind LineKind, line string) {
+	r.Lines = append(r.Lines, line)
+	r.Kinds = append(r.Kinds, kind)
+}
+
+// diffBackground picks the wash for a diff line. The cursor band beats the
+// added and removed washes, and there is no band unless the diff has focus.
+func diffBackground(kind LineKind, onCursor, focused bool) string {
+	if focused && onCursor {
+		return bgCursor
+	}
+	switch kind {
+	case LineAdd:
+		return bgAdd
+	case LineDel:
+		return bgDel
+	}
+	return ""
 }
 
 // RenderDiff lays out one edit: a header, the request that caused it, then each
@@ -30,51 +62,48 @@ func RenderDiffFull(e capture.Event, prompt string, ctx int, width int) Rendered
 	if width < 20 {
 		width = 20
 	}
-	var out []string
-	var starts []int
+	var r Rendered
 
 	head := fmt.Sprintf("%s  %s", e.Rel, counts(e.Added, e.Removed))
-	out = append(out, styHeading.Render(truncateVisible(head, width)))
+	r.add(LinePlain, styHeading.Render(truncateVisible(head, width)))
 
 	sub := fmt.Sprintf("%s · %s", orDash(e.Tool), e.Time.Format("15:04:05"))
 	if e.Kind == "create" {
 		sub = "new file · " + sub
 	}
-	out = append(out, styDim.Render(truncateVisible(sub, width)))
+	r.add(LinePlain, styDim.Render(truncateVisible(sub, width)))
 
 	if prompt != "" {
-		out = append(out, "")
+		r.add(LinePlain, "")
 		for _, line := range wrap(collapse(prompt), width-2) {
-			out = append(out, styIntent.Render("❯ "+line))
+			r.add(LinePlain, styIntent.Render("❯ "+line))
 		}
 	}
 
 	hl := newHighlighter(e.Rel)
 	for _, h := range e.Hunks {
-		out = append(out, "")
-		starts = append(starts, len(out))
-		out = append(out, styGutter.Render(truncateVisible(hunkHeader(h), width)))
-		out = append(out, renderHunk(h, ctx, width, hl)...)
+		r.add(LinePlain, "")
+		r.HunkStarts = append(r.HunkStarts, len(r.Lines))
+		r.add(LinePlain, styGutter.Render(truncateVisible(hunkHeader(h), width)))
+		renderHunk(&r, h, ctx, width, hl)
 	}
-	return Rendered{Lines: out, HunkStarts: starts}
+	return r
 }
 
-func renderHunk(h capture.Hunk, ctx, width int, hl *highlighter) []string {
-	var out []string
-
+func renderHunk(r *Rendered, h capture.Hunk, ctx, width int, hl *highlighter) {
 	// Leading context: the lines nearest the hunk, so widening grows outward.
 	above := tail(h.Above, ctx)
 	oldNo := h.OldStart - len(above)
 	newNo := h.NewStart - len(above)
 	for _, ln := range above {
-		out = append(out, gutterLine(oldNo, newNo, " ", ln, width, hl))
+		r.add(LinePlain, gutterLine(newNo, " ", ln, width, hl))
 		oldNo++
 		newNo++
 	}
 
 	for _, raw := range h.Lines {
 		if raw == "" {
-			out = append(out, gutterLine(oldNo, newNo, " ", "", width, hl))
+			r.add(LinePlain, gutterLine(newNo, " ", "", width, hl))
 			oldNo++
 			newNo++
 			continue
@@ -84,31 +113,30 @@ func renderHunk(h capture.Hunk, ctx, width int, hl *highlighter) []string {
 		case "\\":
 			continue // "no newline at end of file" is bookkeeping, not code
 		case "+":
-			out = append(out, gutterLine(0, newNo, "+", body, width, hl))
+			r.add(LineAdd, gutterLine(newNo, "+", body, width, hl))
 			newNo++
 		case "-":
-			out = append(out, gutterLine(oldNo, 0, "-", body, width, hl))
+			r.add(LineDel, gutterLine(0, "-", body, width, hl))
 			oldNo++
 		default:
-			out = append(out, gutterLine(oldNo, newNo, " ", body, width, hl))
+			r.add(LinePlain, gutterLine(newNo, " ", body, width, hl))
 			oldNo++
 			newNo++
 		}
 	}
 
 	for _, ln := range head(h.Below, ctx) {
-		out = append(out, gutterLine(oldNo, newNo, " ", ln, width, hl))
+		r.add(LinePlain, gutterLine(newNo, " ", ln, width, hl))
 		oldNo++
 		newNo++
 	}
-	return out
 }
 
 // gutterLine renders one source line: line number, change marker, then the code.
 //
 // Numbers are the file's current ones. A removed line has no number because it
 // no longer exists — mixing old and new numbering in one column reads as noise.
-func gutterLine(oldNo, newNo int, mark, body string, width int, hl *highlighter) string {
+func gutterLine(newNo int, mark, body string, width int, hl *highlighter) string {
 	num := "    "
 	if mark != "-" && newNo > 0 {
 		num = fmt.Sprintf("%4d", newNo)
@@ -118,26 +146,16 @@ func gutterLine(oldNo, newNo int, mark, body string, width int, hl *highlighter)
 	body = strings.ReplaceAll(body, "\t", "    ")
 	body = truncateVisible(body, width-gutter)
 
-	var code string
-	switch mark {
-	case "+":
-		code = styAdd.Render(body)
-	case "-":
-		code = styDel.Render(body)
-	default:
-		code = hl.render(body)
-	}
-
-	marker := mark
+	// Changed lines keep their syntax colours; the wash behind them is what says
+	// they changed, so the code reads the same here as it does in the editor.
+	marker := " "
 	switch mark {
 	case "+":
 		marker = styAdd.Render("+")
 	case "-":
 		marker = styDel.Render("-")
-	default:
-		marker = " "
 	}
-	return styGutter.Render(num) + " " + marker + " " + code
+	return styGutter.Render(num) + " " + marker + " " + hl.render(body)
 }
 
 func hunkHeader(h capture.Hunk) string {
@@ -158,8 +176,11 @@ func counts(added, removed int) string {
 	return strings.Join(parts, " ")
 }
 
-// highlighter colours unchanged context lines by language. Added and removed
-// lines keep their diff colour, which matters more than their syntax.
+// editorStyle is built once: chroma styles are immutable and the panel renders
+// a diff on every keystroke.
+var editorStyle = syntaxStyle()
+
+// highlighter colours code by language, in the editor's own palette.
 type highlighter struct {
 	lexer chroma.Lexer
 	style *chroma.Style
@@ -170,7 +191,7 @@ func newHighlighter(path string) *highlighter {
 	if lx == nil {
 		return &highlighter{}
 	}
-	return &highlighter{lexer: chroma.Coalesce(lx), style: styles.Get("nord")}
+	return &highlighter{lexer: chroma.Coalesce(lx), style: editorStyle}
 }
 
 func (h *highlighter) render(s string) string {

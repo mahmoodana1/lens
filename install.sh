@@ -36,6 +36,7 @@ wanted = {
     "UserPromptSubmit": (None,                                     f"{binary} hook prompt"),
     "SessionStart":     (None,                                     f"{binary} hook session-start"),
     "SessionEnd":       (None,                                     f"{binary} hook session-end"),
+    "Stop":             (None,                                     f"{binary} hook stop"),
 }
 
 for event, (matcher, command) in wanted.items():
@@ -60,4 +61,5 @@ PY
 python3 -c "import json,sys; json.load(open('$SETTINGS')); print('settings.json is valid')"
 echo
 echo "Done. Restart Claude Code (or start a new session) for the hooks to load."
-echo "The panel opens by itself the first time Claude edits a file inside tmux."
+echo "The panel pops up by itself when Claude finishes a turn that changed files."
+echo "Bind a key to reopen it, e.g. in ~/.tmux.conf:  bind e run-shell \"$BIN popup\""
