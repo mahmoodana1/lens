@@ -1,6 +1,7 @@
 package pane_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,16 +51,20 @@ func firstPaneID(t *testing.T, sock string) string {
 	return strings.Split(strings.TrimSpace(string(out)), "\n")[0]
 }
 
-func TestEnsure_NoopOutsideTmux(t *testing.T) {
+// With no tmux to split, capture carries on and nothing is spawned.
+func TestEnsure_ReportsWhenThereIsNoTmux(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("PATH", t.TempDir()) // no tmux binary to find
 	store.Open("s1")
 
-	if err := pane.Ensure("s1", "/bin/true"); err != nil {
-		t.Fatal(err)
+	err := pane.Ensure("s1", "/bin/true")
+	if !errors.Is(err, pane.ErrNoTmux) {
+		t.Errorf("err = %v, want ErrNoTmux", err)
 	}
-	if _, err := os.Stat(filepath.Join(store.Dir("s1"), store.PaneFile)); !os.IsNotExist(err) {
-		t.Error("pane file created outside tmux")
+	if _, statErr := os.Stat(filepath.Join(store.Dir("s1"), store.PaneFile)); !os.IsNotExist(statErr) {
+		t.Error("pane file created with no tmux available")
 	}
 }
 

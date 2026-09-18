@@ -71,10 +71,13 @@ func PostToolUse(stdin io.Reader) error {
 		return err
 	}
 
-	// Spawning the panel is best effort; a missing panel must not fail capture.
-	if err := pane.Ensure(id, self()); err != nil {
-		Debugf("post-tool-use: pane: %v", err)
+	// The scan that follows the next shell command must not report this again.
+	if err := noteIndexed(s, rec.Event.Path); err != nil {
+		Debugf("post-tool-use: note: %v", err)
 	}
+
+	// Spawning the panel is best effort; a missing panel must not fail capture.
+	notePaneFailure(s, pane.Ensure(id, self()))
 	return nil
 }
 

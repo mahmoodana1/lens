@@ -133,9 +133,20 @@ never written, so a long session's log stays small.
 ### Lifecycle
 
 1. First `post-tool-use` of a session creates the session directory.
-2. If `$TMUX` is set and `pane` does not yet exist, the hook splits a pane
-   running `lens` and records the pane id. The file is created with `O_EXCL`,
-   so concurrent edits cannot spawn two panes.
+2. If a tmux pane can be found and `pane` does not yet exist, the hook splits
+   that pane to run `lens` and records the new pane id. The file is created
+   with `O_EXCL`, so concurrent edits cannot spawn two panes.
+
+   The pane is located by controlling terminal, not by `$TMUX`. Hook processes
+   do not reliably inherit the terminal's environment variables — a session
+   that captured edits perfectly still never opened a panel, because `$TMUX`
+   was empty in the hook. The controlling terminal does survive, and tmux
+   reports which pane owns which tty, so `#{pane_tty}` is matched against it.
+   `$TMUX_PANE` is still used as a fast path when present.
+
+   When no pane can be found, the reason is written once per session to
+   `debug.log` and to a `pane-unavailable` marker, so an invisible panel is
+   never a silent one.
 3. The TUI tails `events.jsonl` and re-renders on change.
 4. `SessionEnd` writes an ended marker. The TUI keeps rendering, so the
    session can still be read after Claude exits.

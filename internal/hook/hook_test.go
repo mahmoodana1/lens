@@ -295,3 +295,60 @@ func payload(m map[string]any) []byte {
 	}
 	return b
 }
+
+// An Edit tool call and the Bash scan must not both report the same change.
+func TestEditThenBash_ReportsChangeOnce(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("TMUX", "")
+	proj := t.TempDir()
+	path := filepath.Join(proj, "main.cpp")
+	os.WriteFile(path, []byte("int main() { return 0; }\n"), 0o644)
+
+	start := payload(map[string]any{"hook_event_name": "SessionStart", "session_id": "dup", "cwd": proj})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Claude edits the file with the Edit tool; the hook gets a real patch.
+	os.WriteFile(path, []byte("int main() { return 1; }\n"), 0o644)
+	edit := payload(map[string]any{
+		"hook_event_name": "PostToolUse", "session_id": "dup", "cwd": proj,
+		"tool_name":  "Edit",
+		"tool_input": map[string]any{"file_path": path},
+		"tool_response": map[string]any{
+			"filePath": path, "type": "update",
+			"originalFile": "int main() { return 0; }\n",
+			"structuredPatch": []map[string]any{{
+				"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+				"lines": []string{"-int main() { return 0; }", "+int main() { return 1; }"},
+			}},
+		},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(edit)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later shell command scans the project and must not re-report that edit.
+	bash := payload(map[string]any{
+		"hook_event_name": "PostToolUse", "session_id": "dup", "cwd": proj,
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "ls"},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(bash)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("dup")
+	got, _ := s.Read()
+	if len(got.Events) != 1 {
+		t.Errorf("events = %d, want 1; the same change was recorded twice: %+v",
+			len(got.Events), summarize(got.Events))
+	}
+}
+
+func summarize(events []capture.Event) []string {
+	var out []string
+	for _, e := range events {
+		out = append(out, e.Tool+" "+e.Rel)
+	}
+	return out
+}

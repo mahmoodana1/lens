@@ -17,8 +17,9 @@ import (
 // in parallel, so several hooks can race here; the pane file is created with
 // O_EXCL and whichever process creates it is the one that spawns.
 func Ensure(sessionID, self string) error {
-	if os.Getenv("TMUX") == "" {
-		return nil
+	dest, err := target()
+	if err != nil {
+		return err
 	}
 
 	lock := filepath.Join(store.Dir(sessionID), store.PaneFile)
@@ -31,11 +32,10 @@ func Ensure(sessionID, self string) error {
 	}
 	defer f.Close()
 
-	args := []string{"split-window", "-h", "-d", "-l", "45%", "-P", "-F", "#{pane_id}"}
-	if target := os.Getenv("TMUX_PANE"); target != "" {
-		args = append(args, "-t", target)
+	args := []string{
+		"split-window", "-h", "-d", "-l", "45%", "-P", "-F", "#{pane_id}",
+		"-t", dest, self, "--session", sessionID,
 	}
-	args = append(args, self, "--session", sessionID)
 
 	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {

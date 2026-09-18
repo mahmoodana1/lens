@@ -96,10 +96,47 @@ func bashChanges(env envelope) error {
 		}
 	}
 
-	if err := pane.Ensure(env.SessionID, self()); err != nil {
-		Debugf("bash: pane: %v", err)
-	}
+	notePaneFailure(s, pane.Ensure(env.SessionID, self()))
 	return nil
+}
+
+// notePaneFailure records why the panel did not open, once per session.
+// Without a panel the capture is invisible, so the reason must be findable —
+// but it must not repeat on every command either.
+func notePaneFailure(s *store.Store, err error) {
+	if err == nil {
+		return
+	}
+	marker := filepath.Join(s.Dir(), "pane-unavailable")
+	if _, statErr := os.Stat(marker); statErr == nil {
+		return
+	}
+	os.WriteFile(marker, []byte(err.Error()+"\n"), 0o600)
+	Debugf("panel not opened: %v (TMUX=%q TMUX_PANE=%q)",
+		err, os.Getenv("TMUX"), os.Getenv("TMUX_PANE"))
+}
+
+// noteIndexed records a tool-reported change in the index, so the next scan
+// does not rediscover it.
+func noteIndexed(s *store.Store, path string) error {
+	if path == "" {
+		return nil
+	}
+	dir := filepath.Join(s.Dir(), "index")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
+	return fsindex.Note(dir, path)
 }
 
 // withIndex runs fn against the session's file index under an exclusive lock.

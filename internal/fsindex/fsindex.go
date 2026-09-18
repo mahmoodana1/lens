@@ -384,3 +384,26 @@ func sameFile(a, b string) bool {
 	}
 	return os.SameFile(ai, bi)
 }
+
+// Note records a file's current state without reporting it as a change.
+//
+// A change already described by a tool payload must not be rediscovered by the
+// next scan, or the panel shows it twice.
+func Note(dir, path string) error {
+	ix, err := Load(dir)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	content, ok := readText(path)
+	if !ok {
+		return nil
+	}
+	hash := hashOf(content)
+	ix.putBlob(hash, content)
+	ix.files[path] = Meta{ModTime: info.ModTime(), Size: info.Size(), Hash: hash}
+	return ix.Save()
+}
