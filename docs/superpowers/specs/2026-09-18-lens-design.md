@@ -105,9 +105,10 @@ One Go binary, `lens`, wearing two hats:
 
 | Invocation | Role |
 |---|---|
-| `lens hook post-tool-use` | called by the hook; appends an event, spawns the pane if needed |
-| `lens hook prompt` | called by the hook; records prompt text by `prompt_id` |
-| `lens hook session-end` | called by the hook; marks the session ended |
+| `lens hook session-start` | records the project's pre-session state |
+| `lens hook post-tool-use` | appends an event (or scans, for Bash), spawns the pane if needed |
+| `lens hook prompt` | records prompt text by `prompt_id` |
+| `lens hook session-end` | marks the session ended |
 | `lens` | the TUI |
 
 A single static binary means the hooks have no runtime dependency — no shell
@@ -164,6 +165,7 @@ tested through Bubble Tea's test harness at fixed terminal sizes.
 - **Hook payload shape is not a public contract.** It could change. The
   parser tolerates missing fields and logs anything it cannot understand to a
   debug file rather than failing the session.
-- **A slow hook slows every edit.** The hook does bounded work — parse,
-  append, return — and never blocks on the TUI.
+- **A slow hook slows every command.** The Bash path stat-walks the project,
+  measured at ~13 ms on a 35-file repo, and reads only files that changed. The
+  tool path stays a parse-and-append. Neither blocks on the TUI.
 - **A hook that errors could disrupt a session.** It always exits 0.

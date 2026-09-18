@@ -37,9 +37,18 @@ to load them. The panel then appears on its own.
 ## How it works
 
 Claude Code's `PostToolUse` hook already carries a `structuredPatch` and the
-file's prior contents, so `lens` never snapshots or re-diffs anything. Each edit
-is appended to `$XDG_STATE_HOME/lens/<session>/events.jsonl`; the panel tails it.
-`UserPromptSubmit` records prompts, joined to edits by `prompt_id`.
+file's prior contents, so edits made with the Edit and Write tools need no
+snapshotting or re-diffing.
+
+Files written by shell commands — heredocs, `sed -i`, code generators — report
+nothing about what they touched, so those are found by watching the project:
+`SessionStart` records what it looked like beforehand, and after each Bash call
+a stat-walk finds what moved and diffs it. Build output, dependencies, binaries
+and large files are skipped; `$HOME` and `/` are never walked.
+
+Each change is appended to `$XDG_STATE_HOME/lens/<session>/events.jsonl`; the
+panel tails it. `UserPromptSubmit` records prompts, joined to edits by
+`prompt_id`.
 
 Storage is per-session and ephemeral: quitting the panel deletes the log, and
 sessions left behind are swept after 24 hours.
