@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mahmood/lens/internal/capture"
 	"github.com/mahmood/lens/internal/hook"
 	"github.com/mahmood/lens/internal/store"
 )
@@ -166,4 +167,131 @@ func TestPostToolUse_NoPatchIsNotAnError(t *testing.T) {
 	if len(got.Events) != 0 {
 		t.Errorf("events = %d, want 0", len(got.Events))
 	}
+}
+
+// Claude often writes files with shell heredocs rather than the Write tool.
+// Those changes must show up in the panel too.
+func TestBash_CapturesHeredocWrites(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("TMUX", "")
+	proj := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(proj, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session start establishes the baseline, before anything runs.
+	start := payload(map[string]any{
+		"hook_event_name": "SessionStart", "session_id": "bash1", "cwd": proj,
+	})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The command actually runs, then the hook fires.
+	if err := os.WriteFile(filepath.Join(proj, "main.go"),
+		[]byte("package main\n\nfunc main() { println(\"hi\") }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "helper.go"),
+		[]byte("package main\n\nfunc help() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bash := payload(map[string]any{
+		"hook_event_name": "PostToolUse", "session_id": "bash1", "cwd": proj,
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "cat > main.go <<'EOF'\n...\nEOF"},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(bash)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("bash1")
+	got, _ := s.Read()
+	if len(got.Events) != 2 {
+		t.Fatalf("events = %d, want 2 (one modified, one created): %+v", len(got.Events), got.Events)
+	}
+
+	byRel := map[string]capture.Event{}
+	for _, e := range got.Events {
+		byRel[e.Rel] = e
+	}
+	if e, ok := byRel["main.go"]; !ok {
+		t.Error("the modified file was not captured")
+	} else if e.Kind != "update" || e.Added != 1 || e.Removed != 1 {
+		t.Errorf("main.go = %s +%d -%d, want update +1 -1", e.Kind, e.Added, e.Removed)
+	}
+	if e, ok := byRel["helper.go"]; !ok {
+		t.Error("the created file was not captured")
+	} else if e.Kind != "create" {
+		t.Errorf("helper.go kind = %q, want create", e.Kind)
+	}
+}
+
+// A command that reads but writes nothing must not produce entries.
+func TestBash_NoChangesNoEvents(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("TMUX", "")
+	proj := t.TempDir()
+	os.WriteFile(filepath.Join(proj, "a.txt"), []byte("hello\n"), 0o644)
+
+	start := payload(map[string]any{"hook_event_name": "SessionStart", "session_id": "bash2", "cwd": proj})
+	hook.SessionStart(bytes.NewReader(start))
+
+	bash := payload(map[string]any{
+		"hook_event_name": "PostToolUse", "session_id": "bash2", "cwd": proj,
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "ls -la"},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(bash)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("bash2")
+	got, _ := s.Read()
+	if len(got.Events) != 0 {
+		t.Errorf("events = %d, want 0 for a read-only command", len(got.Events))
+	}
+}
+
+// Running from home, the project named in the command is what gets watched.
+func TestBash_SeedsRootFromCommandWhenStartedFromHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("TMUX", "")
+	home, _ := os.UserHomeDir()
+	proj := t.TempDir() // stands in for a project created during the session
+
+	start := payload(map[string]any{"hook_event_name": "SessionStart", "session_id": "bash3", "cwd": home})
+	hook.SessionStart(bytes.NewReader(start))
+
+	os.WriteFile(filepath.Join(proj, "CMakeLists.txt"), []byte("project(x)\n"), 0o644)
+
+	bash := payload(map[string]any{
+		"hook_event_name": "PostToolUse", "session_id": "bash3", "cwd": home,
+		"tool_name": "Bash",
+		"tool_input": map[string]any{
+			"command": "mkdir -p " + proj + "/src && cat > " + proj + "/CMakeLists.txt <<'EOF'\nproject(x)\nEOF",
+		},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(bash)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("bash3")
+	got, _ := s.Read()
+	if len(got.Events) != 1 {
+		t.Fatalf("events = %d, want 1; the project named in the command should be watched", len(got.Events))
+	}
+	if got.Events[0].Kind != "create" {
+		t.Errorf("kind = %q, want create", got.Events[0].Kind)
+	}
+}
+
+func payload(m map[string]any) []byte {
+	b, err := json.Marshal(m)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }

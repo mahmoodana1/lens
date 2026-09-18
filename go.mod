@@ -6,6 +6,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/hexops/gotextdiff v1.0.3
 	github.com/rivo/uniseg v0.4.7
 )
 

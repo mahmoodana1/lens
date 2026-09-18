@@ -1,0 +1,386 @@
+// Package fsindex notices file changes that no tool payload describes.
+//
+// Claude often writes files through shell commands — heredocs, sed -i, code
+// generators — which report nothing about what they touched. fsindex keeps a
+// small record of the project's text files and, after each command, stat-walks
+// the tree to find what moved. Content for changed files is kept so the next
+// change can be shown as a real diff.
+package fsindex
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	maxFileBytes = 256 * 1024 // bigger files are not readable diffs
+	maxFiles     = 20000      // a guard against walking something enormous
+	maxDepth     = 12
+	sniffBytes   = 8192
+)
+
+// skipDirs are directories whose churn is never worth showing.
+var skipDirs = map[string]bool{
+	".git": true, ".hg": true, ".svn": true, ".jj": true,
+	"node_modules": true, "vendor": true, "target": true,
+	"build": true, "dist": true, "out": true, ".next": true,
+	"__pycache__": true, ".venv": true, "venv": true,
+	".cache": true, ".mypy_cache": true, ".pytest_cache": true,
+	".gradle": true, ".idea": true, ".tox": true, "zig-cache": true,
+	".lens": true,
+}
+
+// Meta is what the index remembers about one file.
+type Meta struct {
+	ModTime time.Time `json:"mtime"`
+	Size    int64     `json:"size"`
+	Hash    string    `json:"hash"`
+}
+
+// Change is one observed difference in a file.
+type Change struct {
+	Path string // absolute
+	Kind string // "create" or "update"
+	Old  string
+	New  string
+}
+
+// Index tracks a set of roots and the files under them.
+type Index struct {
+	dir       string // where the index and its blobs live
+	roots     []string
+	files     map[string]Meta
+	baselined bool // the pre-session state has been recorded
+}
+
+type persisted struct {
+	Roots     []string        `json:"roots"`
+	Files     map[string]Meta `json:"files"`
+	Baselined bool            `json:"baselined"`
+}
+
+// Load reads the index stored in dir, or starts an empty one.
+func Load(dir string) (*Index, error) {
+	ix := &Index{dir: dir, files: map[string]Meta{}}
+	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
+		return nil, err
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ix, nil
+		}
+		return nil, err
+	}
+	var p persisted
+	if err := json.Unmarshal(b, &p); err != nil {
+		return ix, nil // a corrupt index costs a baseline, not a session
+	}
+	ix.roots = p.Roots
+	ix.baselined = p.Baselined
+	if p.Files != nil {
+		ix.files = p.Files
+	}
+	return ix, nil
+}
+
+// Save persists the index for the next hook invocation.
+func (ix *Index) Save() error {
+	b, err := json.Marshal(persisted{Roots: ix.roots, Files: ix.files, Baselined: ix.baselined})
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(ix.dir, "index.json.tmp")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(ix.dir, "index.json"))
+}
+
+// Roots are the directories being watched.
+func (ix *Index) Roots() []string { return ix.roots }
+
+// AddRoot starts watching a directory.
+//
+// A home directory or the filesystem root is refused: walking either would cost
+// far more than it could ever show. Those sessions get their roots from the
+// paths that commands actually name.
+func (ix *Index) AddRoot(dir string) {
+	if dir == "" {
+		return
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return
+	}
+	abs = filepath.Clean(abs)
+	if !watchable(abs) {
+		return
+	}
+	for _, r := range ix.roots {
+		if r == abs || strings.HasPrefix(abs, r+string(filepath.Separator)) {
+			return // already covered by an existing root
+		}
+	}
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return
+	}
+
+	// Adding a parent absorbs any roots nested inside it, so no file is ever
+	// walked — and reported — twice.
+	kept := ix.roots[:0]
+	for _, r := range ix.roots {
+		if !strings.HasPrefix(r, abs+string(filepath.Separator)) {
+			kept = append(kept, r)
+		}
+	}
+	ix.roots = append(kept, abs)
+}
+
+// watchable rejects roots too broad to walk.
+func watchable(abs string) bool {
+	if abs == "/" || abs == "." {
+		return false
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if abs == filepath.Clean(home) {
+			return false
+		}
+		// Refuse a parent of home too, e.g. /home.
+		if strings.HasPrefix(filepath.Clean(home), abs+string(filepath.Separator)) {
+			return false
+		}
+	}
+	return true
+}
+
+// SeedFromCommand adds roots named by a shell command, which is how a session
+// started outside a project still finds the project it just created.
+func (ix *Index) SeedFromCommand(cmd string) {
+	for _, tok := range pathTokens(cmd) {
+		abs, err := filepath.Abs(tok)
+		if err != nil {
+			continue
+		}
+		fi, err := os.Stat(abs)
+		if err != nil {
+			// A path that does not exist may be a file about to be written;
+			// its parent is the interesting directory.
+			abs = filepath.Dir(abs)
+			if fi, err = os.Stat(abs); err != nil {
+				continue
+			}
+		}
+		if fi.IsDir() {
+			ix.AddRoot(abs)
+		} else {
+			ix.AddRoot(filepath.Dir(abs))
+		}
+	}
+}
+
+// pathTokens picks the path-looking words out of a command line.
+func pathTokens(cmd string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range strings.FieldsFunc(cmd, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == ';' || r == '|' || r == '&' ||
+			r == '"' || r == '\'' || r == '(' || r == ')' || r == '<' || r == '>'
+	}) {
+		tok := strings.TrimSpace(raw)
+		if len(tok) < 2 || strings.HasPrefix(tok, "-") {
+			continue
+		}
+		if !strings.Contains(tok, "/") {
+			continue
+		}
+		if strings.ContainsAny(tok, "*?$`") {
+			continue
+		}
+		if strings.HasPrefix(tok, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				tok = filepath.Join(home, tok[2:])
+			}
+		}
+		if seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		out = append(out, tok)
+	}
+	return out
+}
+
+// Rescan walks the roots and reports what changed since the last scan,
+// updating the index as it goes. The first scan establishes a baseline and
+// reports nothing.
+//
+// A root added later — a project created during the session — is a special
+// case: its files are unknown but not necessarily new. Only those modified at
+// or after since are reported, so adopting an existing directory mid-session
+// does not flood the panel with files Claude never touched.
+func (ix *Index) Rescan(since time.Time) []Change {
+	first := !ix.baselined
+	seen := make(map[string]Meta, len(ix.files))
+	var changes []Change
+	budget := maxFiles
+
+	for _, root := range ix.roots {
+		ix.walk(root, root, 0, &budget, seen, &changes, first, since)
+	}
+	ix.baselined = true
+
+	// Files that vanished simply leave the index; a deletion is not something
+	// to read, and reporting one would only add noise to the panel.
+	for path, meta := range seen {
+		ix.files[path] = meta
+	}
+	for path := range ix.files {
+		if _, ok := seen[path]; !ok {
+			delete(ix.files, path)
+		}
+	}
+
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
+	return changes
+}
+
+func (ix *Index) walk(root, dir string, depth int, budget *int, seen map[string]Meta, changes *[]Change, first bool, since time.Time) {
+	if depth > maxDepth || *budget <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if *budget <= 0 {
+			return
+		}
+		name := e.Name()
+		path := filepath.Join(dir, name)
+
+		if e.IsDir() {
+			if skipDirs[name] {
+				continue
+			}
+			if sameFile(path, ix.dir) {
+				continue // never report the index's own storage
+			}
+			ix.walk(root, path, depth+1, budget, seen, changes, first, since)
+			continue
+		}
+		if !e.Type().IsRegular() {
+			continue
+		}
+
+		if _, done := seen[path]; done {
+			continue // already visited this scan, via an overlapping root
+		}
+
+		info, err := e.Info()
+		if err != nil || info.Size() > maxFileBytes {
+			continue
+		}
+		*budget--
+
+		prev, known := ix.files[path]
+		if known && prev.Size == info.Size() && prev.ModTime.Equal(info.ModTime()) {
+			seen[path] = prev
+			continue
+		}
+
+		content, ok := readText(path)
+		if !ok {
+			continue // binary: not a readable diff
+		}
+		hash := hashOf(content)
+		meta := Meta{ModTime: info.ModTime(), Size: info.Size(), Hash: hash}
+		seen[path] = meta
+
+		if first {
+			ix.putBlob(hash, content)
+			continue
+		}
+		if known && prev.Hash == hash {
+			continue // touched but unchanged, e.g. rebuilt from identical input
+		}
+		if !known && info.ModTime().Before(since) {
+			// Pre-existing file in a newly adopted root: record, do not report.
+			ix.putBlob(hash, content)
+			continue
+		}
+
+		old := ""
+		kind := "create"
+		if known {
+			kind = "update"
+			old, _ = ix.blob(prev.Hash)
+		}
+		ix.putBlob(hash, content)
+		*changes = append(*changes, Change{Path: path, Kind: kind, Old: old, New: content})
+	}
+}
+
+// readText returns a file's contents, or false when it is not text.
+func readText(path string) (string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	head := b
+	if len(head) > sniffBytes {
+		head = head[:sniffBytes]
+	}
+	for _, c := range head {
+		if c == 0 {
+			return "", false
+		}
+	}
+	return string(b), true
+}
+
+func hashOf(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func (ix *Index) blobPath(hash string) string {
+	return filepath.Join(ix.dir, "blobs", hash)
+}
+
+func (ix *Index) putBlob(hash, content string) {
+	path := ix.blobPath(hash)
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	os.WriteFile(path, []byte(content), 0o600)
+}
+
+func (ix *Index) blob(hash string) (string, bool) {
+	b, err := os.ReadFile(ix.blobPath(hash))
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+func sameFile(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
+}

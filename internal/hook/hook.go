@@ -25,13 +25,23 @@ type envelope struct {
 	PromptID  string `json:"prompt_id"`
 	CWD       string `json:"cwd"`
 	Prompt    string `json:"prompt"`
+	ToolName  string `json:"tool_name"`
+	ToolInput struct {
+		Command string `json:"command"`
+	} `json:"tool_input"`
 }
 
-// PostToolUse records one edit and makes sure the panel is showing.
+// PostToolUse records what a tool changed and makes sure the panel is showing.
 func PostToolUse(stdin io.Reader) error {
 	raw, env, err := read(stdin)
 	if err != nil {
 		return err
+	}
+
+	// Shell commands describe nothing about the files they touch, so their
+	// changes are found by looking at the project rather than the payload.
+	if env.ToolName == "Bash" {
+		return bashChanges(env)
 	}
 
 	rec, err := capture.ParsePostToolUse(raw)

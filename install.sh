@@ -29,10 +29,13 @@ with open(settings_path) as f:
 
 hooks = settings.setdefault("hooks", {})
 
+# Bash is matched too: Claude often writes files with heredocs and sed rather
+# than the Write tool, and those changes are found by looking at the project.
 wanted = {
-    "PostToolUse":      ("Edit|Write|MultiEdit|NotebookEdit", f"{binary} hook post-tool-use"),
-    "UserPromptSubmit": (None,                                f"{binary} hook prompt"),
-    "SessionEnd":       (None,                                f"{binary} hook session-end"),
+    "PostToolUse":      ("Edit|Write|MultiEdit|NotebookEdit|Bash", f"{binary} hook post-tool-use"),
+    "UserPromptSubmit": (None,                                     f"{binary} hook prompt"),
+    "SessionStart":     (None,                                     f"{binary} hook session-start"),
+    "SessionEnd":       (None,                                     f"{binary} hook session-end"),
 }
 
 for event, (matcher, command) in wanted.items():

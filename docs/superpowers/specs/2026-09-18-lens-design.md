@@ -73,6 +73,32 @@ weight, verified against real payloads rather than recollection.
 The same probe confirmed `prompt_id` is shared between `UserPromptSubmit` and
 every `PostToolUse` it causes. That is the join key for the intent line.
 
+## Capture: changes no payload describes
+
+A tool-based hook only sees what the Edit and Write tools do. In practice a
+large share of file changes arrive through the Bash tool — heredocs, `sed -i`,
+code generators, formatters — and a `Bash` payload carries a command string and
+stdout, nothing about which files moved. A session that wrote an entire project
+with `cat > file <<'EOF'` produced prompts and no edits at all.
+
+So lens also watches the project. The `SessionStart` hook records what the
+project looked like before Claude touched anything; after each Bash call, a
+stat-walk finds files whose mtime or size moved, and their contents are diffed
+against what was stored. Only changed files are read.
+
+Bounds that keep this cheap and quiet:
+
+- Roots are the session's working directory, plus directories named by the
+  commands themselves — which is how a session started in `$HOME` still finds
+  the project it just created. A home directory or `/` is never walked.
+- Adding a parent root absorbs roots nested inside it, so no file is walked or
+  reported twice.
+- Build output, dependency and VCS directories are skipped, as are binaries and
+  files over 256 KB.
+- A root adopted mid-session reports only files modified since the session
+  began, so `cd`-ing into an existing project does not flood the panel.
+- Deletions are not reported: there is nothing to read in a file that is gone.
+
 ## Architecture
 
 One Go binary, `lens`, wearing two hats:

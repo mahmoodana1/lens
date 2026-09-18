@@ -80,6 +80,8 @@ func runHook(name string) {
 		err = hook.PostToolUse(os.Stdin)
 	case "prompt":
 		err = hook.Prompt(os.Stdin)
+	case "session-start":
+		err = hook.SessionStart(os.Stdin)
 	case "session-end":
 		err = hook.SessionEnd(os.Stdin)
 	default:
