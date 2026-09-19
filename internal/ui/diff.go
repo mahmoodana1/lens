@@ -10,6 +10,9 @@ import (
 	"github.com/mahmood/lens/internal/capture"
 )
 
+// sampleBytes caps how much code is read to work out what language it is.
+const sampleBytes = 4096
+
 // LineKind says how a diff line should be washed.
 type LineKind uint8
 
@@ -94,7 +97,7 @@ func RenderDiffFull(e capture.Event, prompt string, ctx int, width int, hidden H
 		}
 	}
 
-	hl := newHighlighter(e.Rel)
+	hl := newHighlighter(e.Rel, codeSample(e))
 	for i, h := range e.Hunks {
 		if hidden.Hunk(e.Rel, e.Seq, i) {
 			continue
@@ -102,7 +105,7 @@ func RenderDiffFull(e capture.Event, prompt string, ctx int, width int, hidden H
 		r.add(LinePlain, "")
 		r.HunkStarts = append(r.HunkStarts, len(r.Lines))
 		r.HunkIDs = append(r.HunkIDs, i)
-		r.add(LinePlain, styGutter.Render(truncateVisible(hunkHeader(h), width)))
+		r.add(LinePlain, styHunk.Render(truncateVisible(hunkHeader(h), width)))
 		renderHunk(&r, h, ctx, width, hl)
 	}
 	return r
@@ -204,12 +207,74 @@ type highlighter struct {
 	style *chroma.Style
 }
 
-func newHighlighter(path string) *highlighter {
-	lx := lexers.Match(filepath.Base(path))
+func newHighlighter(path, code string) *highlighter {
+	lx := lexerFor(path, code)
 	if lx == nil {
 		return &highlighter{}
 	}
 	return &highlighter{lexer: chroma.Coalesce(lx), style: editorStyle}
+}
+
+// standIn names a lexer for file types chroma has none of, where another
+// language is close enough to read by. A .bats file is bash with a test
+// harness, a .tmux config is shell-shaped, a justfile is a makefile — colouring
+// them approximately beats handing back a wall of undifferentiated text.
+var standIn = map[string]string{
+	".bats":  "bash",
+	".tmux":  "bash",
+	".envrc": "bash",
+	".just":  "make",
+	".conf":  "ini",
+	".astro": "html",
+	".mdx":   "markdown",
+}
+
+// lexerFor picks the lexer to colour a file with: its name where chroma knows
+// it, a stand-in where one reads close enough, and otherwise whatever the code
+// itself gives away — a shebang on a file with no extension at all.
+//
+// Returning nil means the text is left exactly as it came.
+func lexerFor(path, code string) chroma.Lexer {
+	base := filepath.Base(path)
+	if lx := lexers.Match(base); lx != nil {
+		return lx
+	}
+	if name, ok := standIn[strings.ToLower(filepath.Ext(base))]; ok {
+		if lx := lexers.Get(name); lx != nil {
+			return lx
+		}
+	}
+	if code != "" {
+		return lexers.Analyse(code)
+	}
+	return nil
+}
+
+// codeSample is the code an edit touched, with the diff markers taken off, for
+// working out what language it is when the name does not say.
+func codeSample(e capture.Event) string {
+	var b strings.Builder
+	for _, h := range e.Hunks {
+		for _, raw := range h.Lines {
+			if raw == "" {
+				b.WriteByte('\n')
+				continue
+			}
+			switch raw[0] {
+			case '\\': // the no-newline marker is bookkeeping, not code
+				continue
+			case '+', '-', ' ':
+				b.WriteString(raw[1:])
+			default:
+				b.WriteString(raw)
+			}
+			b.WriteByte('\n')
+		}
+		if b.Len() > sampleBytes {
+			break
+		}
+	}
+	return b.String()
 }
 
 func (h *highlighter) render(s string) string {
@@ -222,12 +287,11 @@ func (h *highlighter) render(s string) string {
 	}
 	var b strings.Builder
 	for _, tok := range it.Tokens() {
-		entry := h.style.Get(tok.Type)
-		if entry.Colour.IsSet() {
-			b.WriteString(lipglossColour(entry.Colour.String()).Render(tok.Value))
-		} else {
-			b.WriteString(tok.Value)
+		if st, ok := entryStyle(h.style.Get(tok.Type)); ok {
+			b.WriteString(st.Render(tok.Value))
+			continue
 		}
+		b.WriteString(tok.Value)
 	}
 	return b.String()
 }

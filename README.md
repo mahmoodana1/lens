@@ -37,9 +37,24 @@ stay bright; once you land on one it dims — and a file lights up again when
 Claude touches it afresh. Read state is kept per session, so closing
 the popup and reopening it does not present everything as new again.
 
-The diff is coloured with the same tokyonight-moon palette as the editor, syntax
-and all, including added and removed lines — what marks those is a wash of green
-or red behind the code rather than flattening it to one colour. `tab` gives the
+The diff is coloured with the same catppuccin mocha palette as the editor,
+syntax and all, including added and removed lines — what marks those is a wash
+of green or red behind the code rather than flattening it to one colour. The
+colours are not an approximation of the theme: the palette is the flavour's own,
+the token mapping is transcribed from catppuccin's syntax and treesitter
+highlight groups, and the washes are its `DiffAdd`, `DiffDelete` and
+`CursorLine`, mixed into the base by the same formula. Comments, docstrings and
+module names come out italic, as they do in the editor.
+
+A file type the highlighter has never heard of used to come out as a wall of
+plain text — `.bats`, `.tmux`, `.conf` and friends have no lexer of their own.
+Those borrow one that reads close enough (a bats file is bash with a test
+harness, a justfile is a makefile), and a file with no useful name at all is
+identified from the code the edit touched, a shebang included.
+
+One thing does not survive the crossing: catppuccin italicises conditionals but
+not other keywords, and the highlighter here has no token that tells `if` from
+`func`, so keywords are left upright rather than italicising all of them. `tab` gives the
 diff a cursor of its own; `ctrl-e`/`ctrl-y` and `ctrl-f`/`ctrl-b` scroll it from
 either pane, so a long hunk never needs a focus change to read.
 

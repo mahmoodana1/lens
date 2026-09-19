@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/chroma/v2"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestBlend_MixesTowardsTheBackground(t *testing.T) {
@@ -49,7 +50,8 @@ func TestStripBackground_RemovesOnlyBackgrounds(t *testing.T) {
 	}
 }
 
-// The diff wears the same colours as the editor beside it.
+// The diff wears the same colours as the editor beside it: catppuccin mocha,
+// mapped the way catppuccin's own treesitter groups map them.
 func TestSyntaxStyle_UsesTheEditorPalette(t *testing.T) {
 	st := syntaxStyle()
 
@@ -57,15 +59,73 @@ func TestSyntaxStyle_UsesTheEditorPalette(t *testing.T) {
 		token chroma.TokenType
 		want  string
 	}{
-		{chroma.Keyword, tnMagenta},
-		{chroma.LiteralString, tnGreen},
-		{chroma.LiteralNumber, tnOrange},
-		{chroma.Comment, tnComment},
-		{chroma.NameFunction, tnBlue},
+		{chroma.Keyword, ctpMauve},            // Keyword
+		{chroma.KeywordConstant, ctpPeach},    // Boolean / Constant
+		{chroma.LiteralString, ctpGreen},      // String
+		{chroma.LiteralStringEscape, ctpPink}, // @string.escape
+		{chroma.LiteralNumber, ctpPeach},      // Number
+		{chroma.Comment, ctpOverlay2},         // Comment
+		{chroma.NameFunction, ctpBlue},        // Function
+		{chroma.NameClass, ctpYellow},         // Type / Structure
+		{chroma.NameProperty, ctpLavender},    // @property
+		{chroma.NameBuiltin, ctpPeach},        // @function.builtin
+		{chroma.Operator, ctpSky},             // Operator
+		{chroma.Punctuation, ctpOverlay2},     // Delimiter
+		{chroma.NameLabel, ctpSapphire},       // Label
+		{chroma.Error, ctpRed},                // Error
 	} {
 		if got := st.Get(c.token).Colour.String(); !strings.EqualFold(got, c.want) {
 			t.Errorf("%v = %s, want %s", c.token, got, c.want)
 		}
+	}
+}
+
+// Catppuccin italicises comments, and that is half of what makes code look
+// like code. The style carries it; rendering has to keep it.
+func TestSyntaxStyle_ComentsAreItalic(t *testing.T) {
+	if got := syntaxStyle().Get(chroma.Comment).Italic; got != chroma.Yes {
+		t.Errorf("comment italic = %v, want yes", got)
+	}
+}
+
+// Rendering a token used to keep only its colour, so every italic and bold in
+// the style was thrown away on the way to the screen. (Asserting on escapes is
+// no good here: lipgloss renders plain when nothing is attached to a terminal.)
+func TestEntryStyle_KeepsMoreThanTheColour(t *testing.T) {
+	st, ok := entryStyle(syntaxStyle().Get(chroma.Comment))
+	if !ok {
+		t.Fatal("a comment has a style; entryStyle reported none")
+	}
+	if !st.GetItalic() {
+		t.Error("the comment's italics were dropped")
+	}
+	if got := st.GetForeground(); got != lipgloss.Color(ctpOverlay2) {
+		t.Errorf("comment colour = %v, want %s", got, ctpOverlay2)
+	}
+
+	// A token the style says nothing about must be left exactly as it came.
+	if _, ok := entryStyle(chroma.StyleEntry{}); ok {
+		t.Error("an empty entry should not dress the token at all")
+	}
+
+	bold, _ := entryStyle(chroma.StyleEntry{Bold: chroma.Yes})
+	if !bold.GetBold() {
+		t.Error("bold was dropped")
+	}
+}
+
+// The washes behind changed lines are catppuccin's own DiffAdd and DiffDelete,
+// which are the flavour's green and red mixed 18%% into the base.
+func TestDiffWashes_MatchTheEditor(t *testing.T) {
+	if want := blend(ctpGreen, ctpBase, 0.18); bgAdd != want {
+		t.Errorf("bgAdd = %s, want %s", bgAdd, want)
+	}
+	if want := blend(ctpRed, ctpBase, 0.18); bgDel != want {
+		t.Errorf("bgDel = %s, want %s", bgDel, want)
+	}
+	// CursorLine, which catppuccin darkens surface0 towards the base for.
+	if want := blend(ctpSurface0, ctpBase, 0.64); bgCursor != want {
+		t.Errorf("bgCursor = %s, want %s", bgCursor, want)
 	}
 }
 

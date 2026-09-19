@@ -33,7 +33,7 @@ Settled with the user during brainstorming:
 4. **`/` filters the list by file name**, fuzzy and as you type. The order stays
    the view's own, so narrowing a timeline does not reshuffle it; the ranking
    decides where the cursor lands instead.
-5. **The diff wears the editor's colours.** tokyonight-moon, expressed as a
+5. **The diff wears the editor's colours.** catppuccin mocha, expressed as a
    chroma style, on every line including added and removed ones; what marks a
    change is a wash of the diff colour behind the code, not flattening it to a
    single green or red. The diff has its own cursor when focused, and scrolls

@@ -10,89 +10,175 @@ import (
 	"github.com/rivo/uniseg"
 )
 
-// tokyonight-moon, the same palette the editor next to this panel uses, so a
-// diff here and the file open in nvim read as the same code.
+// catppuccin mocha, the flavour the editor next to this panel wears, so a diff
+// here and the file open in nvim read as the same code. The values are the
+// flavour's own palette, and the mapping below is catppuccin's own — its syntax
+// and treesitter highlight groups, transcribed onto chroma's token types.
 const (
-	tnBg          = "#222436"
-	tnBgHighlight = "#2f334d"
-	tnFg          = "#c8d3f5"
-	tnFgDark      = "#828bb8"
-	tnComment     = "#636da6"
-	tnBlue        = "#82aaff"
-	tnBlue1       = "#65bcff"
-	tnBlue5       = "#89ddff"
-	tnCyan        = "#86e1fc"
-	tnGreen       = "#c3e88d"
-	tnMagenta     = "#c099ff"
-	tnOrange      = "#ff966c"
-	tnRed         = "#ff757f"
-	tnYellow      = "#ffc777"
-	tnTeal        = "#4fd6be"
-	tnGitAdd      = "#b8db87"
-	tnGitDelete   = "#e26a75"
+	ctpRosewater = "#f5e0dc"
+	ctpFlamingo  = "#f2cdcd"
+	ctpPink      = "#f5c2e7"
+	ctpMauve     = "#cba6f7"
+	ctpRed       = "#f38ba8"
+	ctpMaroon    = "#eba0ac"
+	ctpPeach     = "#fab387"
+	ctpYellow    = "#f9e2af"
+	ctpGreen     = "#a6e3a1"
+	ctpTeal      = "#94e2d5"
+	ctpSky       = "#89dceb"
+	ctpSapphire  = "#74c7ec"
+	ctpBlue      = "#89b4fa"
+	ctpLavender  = "#b4befe"
+	ctpText      = "#cdd6f4"
+	ctpSubtext0  = "#a6adc8"
+	ctpOverlay2  = "#9399b2"
+	ctpOverlay1  = "#7f849c"
+	ctpOverlay0  = "#6c7086"
+	ctpSurface2  = "#585b70"
+	ctpSurface1  = "#45475a"
+	ctpSurface0  = "#313244"
+	ctpBase      = "#1e1e2e"
 )
 
-// Changed lines get a wash of their diff colour rather than a solid block, so
-// the syntax colouring stays readable on top of it.
+// The washes are the editor's own DiffAdd, DiffDelete and CursorLine, which
+// catppuccin builds by mixing a colour into the base rather than painting a
+// solid block — which is what keeps the syntax colouring readable on top.
 var (
-	bgAdd    = blend(tnGitAdd, tnBg, 0.22)
-	bgDel    = blend(tnGitDelete, tnBg, 0.22)
-	bgCursor = tnBgHighlight
+	bgAdd    = blend(ctpGreen, ctpBase, 0.18)
+	bgDel    = blend(ctpRed, ctpBase, 0.18)
+	bgCursor = blend(ctpSurface0, ctpBase, 0.64)
 )
 
 var (
-	colAdd     = lipgloss.Color(tnGitAdd)
-	colDel     = lipgloss.Color(tnGitDelete)
-	colDim     = lipgloss.Color(tnComment)
-	colAccent  = lipgloss.Color(tnBlue)
-	colHeading = lipgloss.Color(tnCyan)
+	colAdd     = lipgloss.Color(ctpGreen)
+	colDel     = lipgloss.Color(ctpRed)
+	colDim     = lipgloss.Color(ctpOverlay0)
+	colAccent  = lipgloss.Color(ctpLavender)
+	colHeading = lipgloss.Color(ctpBlue)
 
-	styHeading  = lipgloss.NewStyle().Foreground(colHeading).Bold(true)
-	styIntent   = lipgloss.NewStyle().Foreground(colAccent).Italic(true)
-	styAdd      = lipgloss.NewStyle().Foreground(colAdd)
-	styDel      = lipgloss.NewStyle().Foreground(colDel)
-	styContext  = lipgloss.NewStyle().Foreground(lipgloss.NoColor{})
-	styGutter   = lipgloss.NewStyle().Foreground(colDim)
+	styHeading = lipgloss.NewStyle().Foreground(colHeading).Bold(true) // Title
+	styIntent  = lipgloss.NewStyle().Foreground(colAccent).Italic(true)
+	styAdd     = lipgloss.NewStyle().Foreground(colAdd)
+	styDel     = lipgloss.NewStyle().Foreground(colDel)
+	// LineNr and CursorLineNr: the numbers recede, the selection does not.
+	styGutter   = lipgloss.NewStyle().Foreground(lipgloss.Color(ctpSurface1))
+	styHunk     = lipgloss.NewStyle().Foreground(lipgloss.Color(ctpSapphire))
 	styDim      = lipgloss.NewStyle().Foreground(colDim)
-	stySelected = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
-	styRow      = lipgloss.NewStyle()
+	stySelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ctpLavender))
+	styRow      = lipgloss.NewStyle().Foreground(lipgloss.Color(ctpText))
 	styHelp     = lipgloss.NewStyle().Foreground(colDim)
-	styBorder   = lipgloss.NewStyle().Foreground(colDim)
+	styBorder   = lipgloss.NewStyle().Foreground(lipgloss.Color(ctpSurface1))
 )
 
 // colours reports whether the terminal takes colour at all. Backgrounds are
 // written by hand rather than through lipgloss, so they need the same gate.
-var colours = lipgloss.NewStyle().Foreground(lipgloss.Color(tnRed)).Render("x") != "x"
+var colours = lipgloss.NewStyle().Foreground(lipgloss.Color(ctpRed)).Render("x") != "x"
 
-// syntaxStyle is tokyonight-moon expressed as a chroma style.
+// syntaxStyle is catppuccin mocha expressed as a chroma style.
+//
+// chroma splits code into finer token types than vim's syntax groups, so this
+// follows catppuccin's treesitter map where one exists and its syntax map
+// otherwise. Anything left out inherits from its parent token, which is why the
+// broad entries — Name, Literal, Keyword — are set as well as the narrow ones.
+//
+// One thing cannot be carried across: catppuccin italicises conditionals but
+// not other keywords, and chroma has no token that separates `if` from `func`.
+// Keywords are left upright rather than italicising all of them.
 func syntaxStyle() *chroma.Style {
-	st, err := chroma.NewStyle("tokyonight-moon", chroma.StyleEntries{
-		chroma.Background:      tnFg + " bg:" + tnBg,
-		chroma.Comment:         "italic " + tnComment,
-		chroma.CommentPreproc:  tnMagenta,
-		chroma.Keyword:         tnMagenta,
-		chroma.KeywordType:     tnBlue1,
-		chroma.KeywordConstant: tnOrange,
-		chroma.Operator:        tnBlue5,
-		chroma.Punctuation:     tnFgDark,
-		chroma.Name:            tnFg,
-		chroma.NameBuiltin:     tnBlue1,
-		chroma.NameClass:       tnBlue1,
-		chroma.NameFunction:    tnBlue,
-		chroma.NameTag:         tnRed,
-		chroma.NameAttribute:   tnTeal,
-		chroma.NameConstant:    tnOrange,
-		chroma.NameDecorator:   tnYellow,
-		chroma.LiteralString:   tnGreen,
-		chroma.LiteralNumber:   tnOrange,
-		chroma.GenericInserted: tnGitAdd,
-		chroma.GenericDeleted:  tnGitDelete,
-		chroma.Error:           tnRed,
+	st, err := chroma.NewStyle("catppuccin-mocha", chroma.StyleEntries{
+		chroma.Background: ctpText + " bg:" + ctpBase,
+		chroma.Text:       ctpText,
+
+		chroma.Comment:        "italic " + ctpOverlay2,
+		chroma.CommentPreproc: ctpPink, // PreProc
+		chroma.CommentSpecial: "italic " + ctpPink,
+
+		chroma.Keyword:            ctpMauve,
+		chroma.KeywordConstant:    ctpPeach, // true, false, nil
+		chroma.KeywordDeclaration: ctpMauve,
+		chroma.KeywordNamespace:   ctpMauve, // Include: import, package
+		chroma.KeywordPseudo:      ctpPeach,
+		chroma.KeywordReserved:    ctpMauve,
+		chroma.KeywordType:        ctpMauve, // @type.builtin: int, string
+
+		chroma.Name:                 ctpText, // @variable
+		chroma.NameAttribute:        ctpLavender,
+		chroma.NameBuiltin:          ctpPeach, // @function.builtin
+		chroma.NameBuiltinPseudo:    ctpRed,   // @variable.builtin: self, this
+		chroma.NameClass:            ctpYellow,
+		chroma.NameConstant:         ctpPeach,
+		chroma.NameDecorator:        ctpPeach, // @attribute
+		chroma.NameEntity:           ctpPink,
+		chroma.NameException:        ctpMauve,
+		chroma.NameFunction:         ctpBlue,
+		chroma.NameFunctionMagic:    ctpPeach,
+		chroma.NameLabel:            ctpSapphire,
+		chroma.NameNamespace:        "italic " + ctpYellow, // @module
+		chroma.NameOther:            ctpText,
+		chroma.NameProperty:         ctpLavender, // @property
+		chroma.NameTag:              ctpLavender,
+		chroma.NameVariable:         ctpText,
+		chroma.NameVariableClass:    ctpLavender,
+		chroma.NameVariableGlobal:   ctpLavender,
+		chroma.NameVariableInstance: ctpLavender, // @variable.member
+		chroma.NameVariableMagic:    ctpRed,
+
+		chroma.Literal:                ctpPeach,
+		chroma.LiteralDate:            ctpPink,
+		chroma.LiteralNumber:          ctpPeach,
+		chroma.LiteralString:          ctpGreen,
+		chroma.LiteralStringAffix:     ctpMauve,
+		chroma.LiteralStringChar:      ctpTeal, // Character
+		chroma.LiteralStringDoc:       "italic " + ctpTeal,
+		chroma.LiteralStringEscape:    ctpPink,
+		chroma.LiteralStringInterpol:  ctpPink,
+		chroma.LiteralStringRegex:     ctpPink,
+		chroma.LiteralStringSymbol:    ctpFlamingo,
+		chroma.LiteralStringDelimiter: ctpGreen,
+		chroma.LiteralStringBacktick:  ctpGreen,
+		chroma.LiteralStringDouble:    ctpGreen,
+		chroma.LiteralStringSingle:    ctpGreen,
+		chroma.LiteralStringHeredoc:   ctpGreen,
+		chroma.LiteralStringOther:     ctpGreen,
+
+		chroma.Operator:     ctpSky,
+		chroma.OperatorWord: ctpMauve, // @keyword.operator
+		chroma.Punctuation:  ctpOverlay2,
+
+		chroma.GenericDeleted:    ctpRed,
+		chroma.GenericInserted:   ctpGreen,
+		chroma.GenericEmph:       "italic",
+		chroma.GenericStrong:     "bold",
+		chroma.GenericHeading:    "bold " + ctpBlue,
+		chroma.GenericSubheading: "bold " + ctpSapphire,
+
+		chroma.Error: ctpRed,
 	})
 	if err != nil {
 		return styles.Fallback
 	}
 	return st
+}
+
+// entryStyle turns one of the style's entries into the way it is drawn. Colour
+// alone is not the whole of it: catppuccin leans on italics for comments,
+// strings of documentation and module names, and dropping them flattens code
+// into a wall of coloured text.
+func entryStyle(e chroma.StyleEntry) (lipgloss.Style, bool) {
+	st, set := lipgloss.NewStyle(), false
+	if e.Colour.IsSet() {
+		st, set = st.Foreground(lipgloss.Color(e.Colour.String())), true
+	}
+	if e.Bold == chroma.Yes {
+		st, set = st.Bold(true), true
+	}
+	if e.Italic == chroma.Yes {
+		st, set = st.Italic(true), true
+	}
+	if e.Underline == chroma.Yes {
+		st, set = st.Underline(true), true
+	}
+	return st, set
 }
 
 // blend mixes a colour into a background: t=0 is all background, t=1 all colour.
@@ -195,11 +281,6 @@ func truncateVisible(s string, width int) string {
 		w += rw
 	}
 	return string(out) + "…"
-}
-
-// lipglossColour turns a chroma hex colour into a lipgloss style.
-func lipglossColour(hex string) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(hex))
 }
 
 // StripANSIForTest exposes stripANSI so tests can assert on plain text.
