@@ -96,7 +96,7 @@ func ParsePostToolUse(raw []byte) (*Record, error) {
 			Time:     time.Now(),
 			Tool:     p.ToolName,
 			Path:     path,
-			Rel:      relativeTo(p.CWD, path),
+			Rel:      RelativeTo(p.CWD, path),
 			Kind:     kind,
 			PromptID: p.PromptID,
 			Hunks:    hunks,
@@ -106,9 +106,11 @@ func ParsePostToolUse(raw []byte) (*Record, error) {
 	}, nil
 }
 
-// relativeTo shortens an absolute path against the project root, falling back
-// to the original path when the file lives outside it.
-func relativeTo(root, path string) string {
+// RelativeTo shortens an absolute path against the project root, falling back
+// to the original path when the file lives outside it. The root must be the
+// session's, not the agent's current directory: a path measured from a moving
+// point names the same file two different ways.
+func RelativeTo(root, path string) string {
 	if root == "" || path == "" {
 		return path
 	}

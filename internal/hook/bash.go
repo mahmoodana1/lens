@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +32,7 @@ func SessionStart(stdin io.Reader) error {
 	}
 
 	return withIndex(s, func(ix *fsindex.Index) error {
+		ix.Confine(env.CWD)
 		ix.AddRoot(env.CWD)
 		ix.Rescan(time.Now()) // the first scan is the baseline and reports nothing
 		return nil
@@ -56,11 +56,20 @@ func bashChanges(env envelope) error {
 		since = meta.Meta.Started
 	}
 
+	// Against the session's root, not the shell's directory: a command that has
+	// cd'd elsewhere still touches the same files, under the same names.
+	root := s.ProjectRoot()
+	if root == "" {
+		root = env.CWD
+	}
+
 	var changes []fsindex.Change
 	err = withIndex(s, func(ix *fsindex.Index) error {
+		ix.Confine(root)
 		ix.AddRoot(env.CWD)
 		// A session started outside a project finds it through the paths the
-		// command names — that is how a just-created project gets watched.
+		// command names — that is how a just-created project gets watched. The
+		// project still bounds it, so a command naming /tmp acquires nothing.
 		ix.SeedFromCommand(env.ToolInput.Command)
 		changes = ix.Rescan(since)
 		return nil
@@ -74,6 +83,12 @@ func bashChanges(env envelope) error {
 	}
 
 	for _, c := range changes {
+		// The walk is confined to the project and skips hidden trees, so these
+		// hold rather than filter: an index left over from an older lens is
+		// pruned on Confine, but a change already in hand is checked once more.
+		if !capture.Inside(root, c.Path) || capture.HiddenPath(root, c.Path) {
+			continue
+		}
 		hunks := difftext.Hunks(c.Old, c.New)
 		if len(hunks) == 0 {
 			continue
@@ -83,7 +98,7 @@ func bashChanges(env envelope) error {
 			Time:     time.Now(),
 			Tool:     "Bash",
 			Path:     c.Path,
-			Rel:      relativeTo(env.CWD, c.Path),
+			Rel:      capture.RelativeTo(root, c.Path),
 			Kind:     c.Kind,
 			PromptID: env.PromptID,
 			Hunks:    hunks,
@@ -163,16 +178,4 @@ func withIndex(s *store.Store, fn func(*fsindex.Index) error) error {
 		return err
 	}
 	return ix.Save()
-}
-
-// relativeTo shortens a path against the project root when it sits inside it.
-func relativeTo(root, path string) string {
-	if root == "" || path == "" {
-		return path
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return path
-	}
-	return rel
 }

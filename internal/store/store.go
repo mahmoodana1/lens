@@ -29,6 +29,9 @@ const (
 	// announcedFile records the highest edit the panel has been opened for, so
 	// a turn that changed nothing does not reopen it.
 	announcedFile = "announced"
+	// dismissedFile holds what the reader cleared out of the panel, in the order
+	// they did it, so undo still works after the popup is reopened.
+	dismissedFile = "dismissed.json"
 	// autoOpenFile lists the projects whose panel must not open by itself, one
 	// path per line. A project missing from it opens normally.
 	autoOpenFile = "auto-open-off"
@@ -49,6 +52,17 @@ type Session struct {
 	Prompts map[string]string
 	// Seen holds the sequence numbers of edits that have already been read.
 	Seen map[int]bool
+	// Dismissed is what the reader cleared out of the view, oldest first.
+	Dismissed []Dismissal
+}
+
+// Dismissal is one thing cleared out of the panel: a whole file, one edit to
+// it, or one hunk of one edit. It records what to leave out of the view and
+// nothing about the file on disk, which is never touched.
+type Dismissal struct {
+	Rel  string `json:"rel,omitempty"`
+	Seq  int    `json:"seq,omitempty"`
+	Hunk int    `json:"hunk"`
 }
 
 // Store is a handle on one session's directory.
@@ -232,7 +246,43 @@ func (s *Store) Read() (Session, error) {
 	}
 	out.Seen = seen
 
+	if err := readJSON(filepath.Join(s.dir, dismissedFile), &out.Dismissed); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return out, err
+	}
+
 	return out, nil
+}
+
+// ProjectRoot is the directory the session started in, which is the one thing
+// a path can be shortened against for the whole of it: the agent's own working
+// directory moves when it changes directory, and a path measured from a moving
+// point names the same file two different ways.
+//
+// It is empty when the session has no meta yet, which reads as "do not shorten".
+func (s *Store) ProjectRoot() string {
+	var m Meta
+	if err := readJSON(filepath.Join(s.dir, metaFile), &m); err != nil {
+		return ""
+	}
+	return m.CWD
+}
+
+// SetDismissals records what the panel is leaving out, replacing whatever was
+// there. It is the whole trail rather than one entry because undo and redo move
+// along it in both directions; it is a handful of entries, so rewriting it
+// costs less than reconciling an append-only log would.
+func (s *Store) SetDismissals(trail []Dismissal) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.dir, dismissedFile)
+	if len(trail) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("store: clear dismissed: %w", err)
+		}
+		return nil
+	}
+	return writeJSON(path, trail)
 }
 
 // MarkSeen records that an edit has been read. Landing on a row is what marks
@@ -365,12 +415,33 @@ func mutedProjects() map[string]bool {
 	return muted
 }
 
-// projectKey normalises a project directory so "/p" and "/p/" are one project.
+// ProjectKey is how a project directory is named in the auto-open setting. It
+// is exported so `lens auto` can report the project it actually filed a change
+// under, rather than the shape of path it happened to be given.
+func ProjectKey(project string) string { return projectKey(project) }
+
+// projectKey normalises a project directory to the one name every caller will
+// arrive at: absolute, cleaned and with symlinks resolved.
+//
+// The hook knows a project by the absolute cwd Claude reports; `lens auto` is
+// typically run from inside it, or from a tmux binding that passes a path of
+// its own shape. Without this they would be different projects and muting one
+// would silently fail to mute the other.
+//
+// Resolution is best effort: a directory that no longer exists cannot be
+// resolved, and is still a project whose setting has to be remembered.
 func projectKey(project string) string {
 	if project == "" {
 		return ""
 	}
-	return filepath.Clean(project)
+	abs, err := filepath.Abs(project)
+	if err != nil {
+		return filepath.Clean(project)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
 }
 
 // Destroy removes the session from disk.

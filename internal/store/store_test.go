@@ -310,3 +310,111 @@ func TestAutoOpenIgnoresPathShape(t *testing.T) {
 		t.Error("/p/one and /p/one/ should be the same project")
 	}
 }
+
+// The hook knows a project by its absolute path; the CLI is run from inside it.
+// A relative path has to name the same project, or muting silently does nothing.
+func TestAutoOpenResolvesRelativePaths(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	if err := store.SetAutoOpen(".", false); err != nil {
+		t.Fatal(err)
+	}
+	if store.AutoOpen(dir) {
+		t.Errorf("muting %q did not mute %q", ".", dir)
+	}
+}
+
+// A project reached through a symlink is the same project.
+func TestAutoOpenResolvesSymlinks(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := store.SetAutoOpen(link, false); err != nil {
+		t.Fatal(err)
+	}
+	if store.AutoOpen(real) {
+		t.Errorf("muting the symlink %q did not mute %q", link, real)
+	}
+}
+
+// What a reader clears out of the panel belongs to that session, and has to
+// still be cleared when the popup is reopened over it.
+func TestDismissalsAreRememberedPerSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	one, err := store.Open("one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := store.Open("two")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trail := []store.Dismissal{{Rel: "a.go", Hunk: -1}, {Seq: 4, Hunk: 2}}
+	if err := one.SetDismissals(trail); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := one.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Dismissed) != 2 || sess.Dismissed[0].Rel != "a.go" || sess.Dismissed[1].Seq != 4 {
+		t.Errorf("read back %v, want the trail in the order it was made", sess.Dismissed)
+	}
+
+	other, err := two.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other.Dismissed) != 0 {
+		t.Errorf("session two has %v, want nothing dismissed of its own", other.Dismissed)
+	}
+}
+
+// Undoing everything has to clear the file, not leave a stale trail behind.
+func TestDismissalsCanBeEmptied(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, err := store.Open("s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDismissals([]store.Dismissal{{Rel: "a.go", Hunk: -1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDismissals(nil); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := s.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Dismissed) != 0 {
+		t.Errorf("dismissed = %v, want none", sess.Dismissed)
+	}
+}
+
+// A session nobody has dismissed anything in reads as empty, not as an error.
+func TestDismissalsDefaultToNone(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, _ := store.Open("fresh")
+	sess, err := s.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Dismissed) != 0 {
+		t.Errorf("dismissed = %v, want none", sess.Dismissed)
+	}
+}

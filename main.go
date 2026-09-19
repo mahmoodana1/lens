@@ -16,7 +16,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -98,28 +97,12 @@ func main() {
 // runs it from the pane's own path: a key binding's command otherwise inherits
 // the tmux server's directory, not the one you are working in.
 func runAuto(args []string) error {
-	fs := flag.NewFlagSet("lens auto", flag.ContinueOnError)
-	project := fs.String("project", "", "project directory (default: the working directory)")
-	if err := fs.Parse(args); err != nil {
+	want, dir, err := parseAutoArgs(args)
+	if err != nil {
 		return err
 	}
 
-	dir := *project
-	if dir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("no project directory: %w", err)
-		}
-		dir = cwd
-	}
-
-	want := "toggle"
-	if fs.NArg() > 0 {
-		want = fs.Arg(0)
-	}
-
 	var on bool
-	var err error
 	switch want {
 	case "toggle":
 		on, err = store.ToggleAutoOpen(dir)
@@ -129,8 +112,6 @@ func runAuto(args []string) error {
 		on, err = false, store.SetAutoOpen(dir, false)
 	case "status":
 		on = store.AutoOpen(dir)
-	default:
-		return errors.New("usage: lens auto [--project DIR] [on|off|toggle|status]")
 	}
 	if err != nil {
 		return err
@@ -140,8 +121,67 @@ func runAuto(args []string) error {
 	if on {
 		state = "on"
 	}
-	fmt.Printf("lens: auto-open %s for %s\n", state, filepath.Base(dir))
+	// The whole path, not its last element: two checkouts of the same repo are
+	// two projects, and "auto-open off for lens" would not say which.
+	fmt.Printf("lens: auto-open %s for %s\n", state, dir)
 	return nil
+}
+
+// autoUsage is what an unrecognised `lens auto` invocation is answered with.
+const autoUsage = "usage: lens auto [--project DIR] [on|off|toggle|status]"
+
+// parseAutoArgs reads a `lens auto` command line, defaulting to toggling the
+// working directory.
+//
+// The flag package stops at the first non-flag argument, so `lens auto on
+// --project X` would otherwise parse as "on" with the flag silently dropped —
+// and act on the wrong project. The verb is taken out first, wherever it sits,
+// and the flags parsed from what is left.
+func parseAutoArgs(args []string) (action, dir string, err error) {
+	action = "toggle"
+	seen := false
+	rest := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "on", "off", "toggle", "status":
+			if seen {
+				return "", "", errors.New(autoUsage)
+			}
+			action, seen = a, true
+		case "--project", "-project":
+			// Its value is not a verb, so it travels with the flag.
+			rest = append(rest, a)
+			if i+1 < len(args) {
+				i++
+				rest = append(rest, args[i])
+			}
+		default:
+			rest = append(rest, a)
+		}
+	}
+
+	fs := flag.NewFlagSet("lens auto", flag.ContinueOnError)
+	project := fs.String("project", "", "project directory (default: the working directory)")
+	if err := fs.Parse(rest); err != nil {
+		return "", "", err
+	}
+	if fs.NArg() > 0 {
+		return "", "", errors.New(autoUsage)
+	}
+
+	dir = *project
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", "", fmt.Errorf("no project directory: %w", err)
+		}
+		dir = cwd
+	}
+	// Resolved here so the confirmation names the project the setting is filed
+	// under, not the "." or "../.." it was reached by.
+	return action, store.ProjectKey(dir), nil
 }
 
 // runPopup opens the panel for a session in a tmux popup and returns.

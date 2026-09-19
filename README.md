@@ -4,14 +4,37 @@ A panel that shows what Claude Code changes in your code, as it happens, so you
 can read it rather than scroll past it.
 
 It pops up by itself in a tmux popup when Claude finishes a turn that changed
-files — a turn that only answered a question leaves it closed, lists every change on the left and the diff on the right, and moves under
-vim motions. A popup holds the keyboard, so it is scrollable the moment it
+files — a turn that only answered a question leaves it closed — lists the files
+on the left and the newest diff on the right, and moves under vim motions. A popup holds the keyboard, so it is scrollable the moment it
 appears — there is no pane to switch to first. Each diff carries the prompt that
 caused it, so you see the request and the code that satisfied it side by side.
 
+The list has two levels. At the top it is the files, grouped under the directory
+they live in so a path is said once rather than on every row. `l` goes into the
+file under the cursor: the other files give way to that file's own history —
+each edit, with the hunks it made listed under it, named by line number and the
+first line they changed. Picking a hunk jumps the diff to it, so a file with a
+past can be read one change at a time. `h` or `esc` comes back out.
+
+`dd` clears whatever the cursor is on out of the view — a file, one edit to it,
+or a single hunk — which is how you put down what you have finished reading.
+Nothing on disk is touched; the files and the capture are left exactly as they
+were. `u` walks that back one `dd` at a time and `ctrl-r` replays it, so you can
+return to any earlier point. The status line says how many rows are hidden, and
+counts only what is left.
+
+What you put down is kept with the session, next to its read state, so closing
+the popup and reopening it finds the list as you left it — and `u` still reaches
+back past the reopen. Another session has its own history and opens untouched.
+
+`enter` is the same journey in one key — into the file, then into a full-width
+diff with no list beside it at all. `J`/`K` move to the next file at any depth,
+so file after file can be read without backing out. `esc` retraces each step.
+
 It opens ready to search: type to filter the list by file name, `⏎` to keep the
-filter, `esc` to clear it. Edits you have not looked at carry a `●` and stay
-bright; once you land on one it dims. Read state is kept per session, so closing
+filter, `esc` to clear it. Changes you have not looked at carry a `●` and
+stay bright; once you land on one it dims — and a file lights up again when
+Claude touches it afresh. Read state is kept per session, so closing
 the popup and reopening it does not present everything as new again.
 
 The diff is coloured with the same tokyonight-moon palette as the editor, syntax
@@ -44,7 +67,10 @@ bind E run-shell "cd '#{pane_current_path}' && ~/.local/bin/lens auto toggle"
 The second binding turns the automatic popup off and on **for the project you
 are in** — `lens auto [--project DIR] [on|off|toggle|status]`, defaulting to the
 working directory. That is why the binding runs it from the pane's own path: a
-key binding's command otherwise inherits the tmux server's directory.
+key binding's command otherwise inherits the tmux server's directory. The verb
+and the flag may come in either order, and the directory is resolved to an
+absolute, symlink-free path, so a relative `--project .` names the same project
+the hook does.
 
 Capture keeps running while it is off, so the next `lens popup` still shows
 everything that happened, and turning it back on catches up rather than skipping
@@ -63,11 +89,16 @@ what it missed. Muted projects are listed in
 | `ctrl-d` / `ctrl-u` | half page |
 | `gg` / `G` | first / last |
 | `n` / `N` | next / previous hunk |
-| `J` / `K` | next / previous file |
-| `t` | toggle timeline ⇄ grouped by file |
+| `J` / `K` | next / previous file, at any depth |
+| `l` / `space` | open the file: its edits, and the hunks they made |
+| `h` / `esc` | back out a level |
+| `enter` | one level in: the file, then its full-width diff |
+| `f` | the full-width diff from anywhere |
+| `dd` | clear the file, edit or hunk out of the view |
+| `u` / `ctrl-r` | undo / redo one `dd` |
 | `+` / `-` | more / less surrounding context |
 | `Tab` | focus the list or the diff; the diff gets its own cursor |
-| `●` | marks an edit you have not looked at yet |
+| `●` | marks a change you have not looked at yet |
 | `?` | help |
 | `q` | close the popup (the capture stays; reopen with your `lens popup` key) |
 
@@ -83,6 +114,33 @@ nothing about what they touched, so those are found by watching the project:
 a stat-walk finds what moved and diffs it. Build output, dependencies, binaries
 and large files are skipped; `$HOME` and `/` are never walked.
 
+The walk never leaves the project. It sweeps whole directories, so a single
+shell command naming a path in `/tmp` used to be enough to adopt it as a root
+and fill the panel with other programs' scratch files — Claude Code's own temp
+repositories for diffing shell edits, a plugin's preload files. Roots named by a
+command are still picked up, which is how a project created mid-session gets
+watched, but only inside the directory the session started in. An index that
+strayed before is pruned rather than merely stopped.
+
+An edit made deliberately with the Edit or Write tool is a different matter:
+someone meant it, so it is recorded wherever the file lives.
+
+Nothing hidden is recorded at all, by either route: if any part of a path starts
+with a dot — the file itself or a directory on the way to it — the change is
+turned away rather than logged. That is `.git`, `.venv`, `.cache`, an editor's
+or an agent's own state, and `.gitignore` alike, without a list of names that
+would always be one entry behind. A hidden directory is not even descended into.
+The question is asked of the path relative to the project root, so a project
+that lives somewhere hidden is not hidden from itself: in `~/.config/nvim`,
+`init.lua` is an ordinary file. Older logs that already hold such edits have
+them dropped when the panel reads them.
+
+Paths are shortened against the directory the session started in, not the one
+the agent happens to be in: an agent that changes into a subdirectory starts
+calling the same file something shorter, and a file named two ways is a file
+listed twice. The panel re-measures older logs the same way, since it is the
+absolute path a change records that is trustworthy, not the short name.
+
 Each change is appended to `$XDG_STATE_HOME/lens/<session>/events.jsonl`; the
 panel tails it. `UserPromptSubmit` records prompts, joined to edits by
 `prompt_id`.
@@ -90,6 +148,10 @@ panel tails it. `UserPromptSubmit` records prompts, joined to edits by
 The panel is opened for edits, not for turns: `announced` records the highest
 edit it has been opened for, and a turn whose edits are all below that opens
 nothing.
+
+What the reader does with the panel is kept per session too: `seen` holds the
+edits already read and `dismissed.json` the trail of `dd`s, both under the
+session's own directory.
 
 Storage is per-session and ephemeral. Closing the popup leaves the log alone so
 you can reopen it, and `SessionEnd` only marks the session finished — the panel

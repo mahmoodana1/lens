@@ -66,6 +66,16 @@ func PostToolUse(stdin io.Reader) error {
 	if err := s.EnsureMeta(rec.CWD); err != nil {
 		Debugf("post-tool-use: meta: %v", err)
 	}
+	// The payload's cwd is wherever the agent is now; the session's root is
+	// where it began. Shortening against the root keeps one file one name.
+	root := s.ProjectRoot()
+	if root == "" {
+		root = rec.CWD
+	}
+	if capture.HiddenPath(root, rec.Event.Path) {
+		return nil // machinery, not work to read
+	}
+	rec.Event.Rel = capture.RelativeTo(root, rec.Event.Path)
 	if err := s.Append(rec.Event); err != nil {
 		Debugf("post-tool-use: append: %v", err)
 		return err

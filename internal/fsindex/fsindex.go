@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mahmood/lens/internal/capture"
 )
 
 const (
@@ -26,15 +28,23 @@ const (
 	sniffBytes   = 8192
 )
 
-// skipDirs are directories whose churn is never worth showing.
+// skipDirs are directories whose churn is never worth showing. Hidden ones are
+// not listed: everything starting with a dot is skipped by the rule below, which
+// no list of names could keep up with.
 var skipDirs = map[string]bool{
-	".git": true, ".hg": true, ".svn": true, ".jj": true,
 	"node_modules": true, "vendor": true, "target": true,
-	"build": true, "dist": true, "out": true, ".next": true,
-	"__pycache__": true, ".venv": true, "venv": true,
-	".cache": true, ".mypy_cache": true, ".pytest_cache": true,
-	".gradle": true, ".idea": true, ".tox": true, "zig-cache": true,
-	".lens": true,
+	"build": true, "dist": true, "out": true,
+	"__pycache__": true, "venv": true, "zig-cache": true,
+}
+
+// hidden reports whether an entry is one the panel never records: anything
+// whose name starts with a dot, file or directory alike. A hidden directory is
+// not even descended into, so a large one costs nothing to ignore.
+//
+// The walk begins at the project root and this asks only about names inside it,
+// so a project that itself lives somewhere hidden is unaffected.
+func hidden(name string) bool {
+	return len(name) > 1 && name[0] == '.'
 }
 
 // Meta is what the index remembers about one file.
@@ -55,6 +65,7 @@ type Change struct {
 // Index tracks a set of roots and the files under them.
 type Index struct {
 	dir       string // where the index and its blobs live
+	project   string // the boundary: no root may lie outside it
 	roots     []string
 	files     map[string]Meta
 	baselined bool // the pre-session state has been recorded
@@ -113,6 +124,40 @@ func (ix *Index) Roots() []string { return ix.roots }
 // A home directory or the filesystem root is refused: walking either would cost
 // far more than it could ever show. Those sessions get their roots from the
 // paths that commands actually name.
+// Confine fixes the project the walk may not leave, and prunes anything already
+// recorded outside it.
+//
+// The walk sweeps whole directories, so a root anywhere else fills the panel
+// with other programs' scratch files — a shell command naming a path in /tmp is
+// enough to acquire one. Roots are saved between calls, so an index that strayed
+// before must be brought back rather than merely stopped from straying again.
+func (ix *Index) Confine(project string) {
+	if project == "" {
+		return
+	}
+	abs, err := filepath.Abs(project)
+	if err != nil {
+		return
+	}
+	ix.project = filepath.Clean(abs)
+
+	kept := ix.roots[:0]
+	for _, r := range ix.roots {
+		if capture.Inside(ix.project, r) {
+			kept = append(kept, r)
+		}
+	}
+	ix.roots = kept
+
+	// The files remembered from those roots would otherwise sit in the index
+	// forever, since nothing will visit them again to retire them.
+	for path := range ix.files {
+		if !capture.Inside(ix.project, path) {
+			delete(ix.files, path)
+		}
+	}
+}
+
 func (ix *Index) AddRoot(dir string) {
 	if dir == "" {
 		return
@@ -124,6 +169,9 @@ func (ix *Index) AddRoot(dir string) {
 	abs = filepath.Clean(abs)
 	if !watchable(abs) {
 		return
+	}
+	if !capture.Inside(ix.project, abs) {
+		return // the walk does not leave the project
 	}
 	for _, r := range ix.roots {
 		if r == abs || strings.HasPrefix(abs, r+string(filepath.Separator)) {
@@ -268,6 +316,9 @@ func (ix *Index) walk(root, dir string, depth int, budget *int, seen map[string]
 		name := e.Name()
 		path := filepath.Join(dir, name)
 
+		if hidden(name) {
+			continue
+		}
 		if e.IsDir() {
 			if skipDirs[name] {
 				continue

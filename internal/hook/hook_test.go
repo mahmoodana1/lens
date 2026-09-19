@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mahmood/lens/internal/capture"
+	"github.com/mahmood/lens/internal/fsindex"
 	"github.com/mahmood/lens/internal/hook"
 	"github.com/mahmood/lens/internal/store"
 )
@@ -256,11 +258,19 @@ func TestBash_NoChangesNoEvents(t *testing.T) {
 }
 
 // Running from home, the project named in the command is what gets watched.
+// A session started in a bare home directory has nothing to walk — home itself
+// is too broad — so the project it goes on to create is found through the paths
+// the command names. It still has to be under where the session started: that
+// is the boundary, and the reason a command naming /tmp acquires nothing.
 func TestBash_SeedsRootFromCommandWhenStartedFromHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("TMUX", "")
-	home, _ := os.UserHomeDir()
-	proj := t.TempDir() // stands in for a project created during the session
+	home := t.TempDir()
+	t.Setenv("HOME", home) // home is refused as a root: too broad to walk
+	proj := filepath.Join(home, "newproj")
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	start := payload(map[string]any{"hook_event_name": "SessionStart", "session_id": "bash3", "cwd": home})
 	hook.SessionStart(bytes.NewReader(start))
@@ -415,5 +425,349 @@ func TestStop_WithEditsOpensThePanel(t *testing.T) {
 
 	if _, err := os.Stat(noPanelMarker(id)); err != nil {
 		t.Error("Stop did not try to open the panel for a session with edits")
+	}
+}
+
+// Muting a project is the whole point of `lens auto off`: the turn still
+// records everything, it just must not take the keyboard.
+func TestStop_MutedProjectOpensNothing(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	project := t.TempDir()
+	s, err := store.Open("s-muted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.EnsureMeta(project)
+	s.Append(capture.Event{Rel: "a.go", Added: 1})
+
+	if err := store.SetAutoOpen(project, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.Stop(bytes.NewReader(payload(map[string]any{"session_id": "s-muted"}))); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(noPanelMarker("s-muted")); err == nil {
+		t.Error("the panel opened for a project whose auto-open is off")
+	}
+}
+
+// Turning it back on catches up: the edits made while it was off were never
+// announced, so the next turn shows them rather than skipping them.
+func TestStop_UnmutingShowsWhatWasMissed(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	project := t.TempDir()
+	s, err := store.Open("s-catchup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.EnsureMeta(project)
+	s.Append(capture.Event{Rel: "a.go", Added: 1})
+
+	if err := store.SetAutoOpen(project, false); err != nil {
+		t.Fatal(err)
+	}
+	stop := func() {
+		if err := hook.Stop(bytes.NewReader(payload(map[string]any{"session_id": "s-catchup"}))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop()
+
+	if n, err := s.Announced(); err != nil || n != 0 {
+		t.Fatalf("announced = %d (err %v) while muted, want 0 so the edit is not written off", n, err)
+	}
+
+	if err := store.SetAutoOpen(project, true); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+
+	if _, err := os.Stat(noPanelMarker("s-catchup")); err != nil {
+		t.Error("turning auto-open back on did not show the edit made while it was off")
+	}
+}
+
+// The setting is keyed on the project, and the session knows which one it is
+// even when the hook payload does not carry a cwd.
+func TestStop_MutingFollowsTheSessionsProject(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	muted, other := t.TempDir(), t.TempDir()
+	if err := store.SetAutoOpen(muted, false); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.Open("s-other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.EnsureMeta(other)
+	s.Append(capture.Event{Rel: "a.go", Added: 1})
+
+	if err := hook.Stop(bytes.NewReader(payload(map[string]any{"session_id": "s-other"}))); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(noPanelMarker("s-other")); err != nil {
+		t.Errorf("muting %q also silenced %q", muted, other)
+	}
+}
+
+// An agent that changes directory mid-session must not make one file look like
+// two. The payload's cwd moves with it; the session's root does not, so that is
+// what a path is shortened against.
+func TestPostToolUse_PathsAreRelativeToTheSessionRoot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "hangman")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(sub, "main.py")
+
+	s, err := store.Open("cd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.EnsureMeta(root) // the session started at the project root
+
+	// The same file, edited after the agent moved into the subdirectory.
+	raw := editPayload("cd", sub, file)
+	if err := hook.PostToolUse(bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := s.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(sess.Events))
+	}
+	if got := sess.Events[0].Rel; got != "hangman/main.py" {
+		t.Errorf("rel = %q, want hangman/main.py — relative to the session root", got)
+	}
+}
+
+// editPayload builds a PostToolUse payload for one Edit, the shape Claude Code
+// sends: a structured patch plus the file's prior contents.
+func editPayload(sessionID, cwd, file string) []byte {
+	return payload(map[string]any{
+		"session_id":      sessionID,
+		"cwd":             cwd,
+		"hook_event_name": "PostToolUse",
+		"tool_name":       "Edit",
+		"tool_input":      map[string]any{"file_path": file},
+		"tool_response": map[string]any{
+			"filePath":        file,
+			"originalFile":    "one\ntwo\n",
+			"structuredPatch": []any{map[string]any{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": []string{"-one", "+ONE"}}},
+		},
+	})
+}
+
+// Shell-captured changes take the other code path into the log, and must name
+// files the same way: against the session's root, not the shell's directory.
+func TestBash_PathsAreRelativeToTheSessionRoot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "hangman")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// The session begins at the project root, and the index takes its baseline.
+	start := payload(map[string]any{"session_id": "cdbash", "cwd": root, "hook_event_name": "SessionStart"})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+
+	file := filepath.Join(sub, "main.py")
+	if err := os.WriteFile(file, []byte("print()\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The command ran after the agent moved into the subdirectory.
+	done := payload(map[string]any{
+		"session_id": "cdbash", "cwd": sub, "hook_event_name": "PostToolUse",
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "python main.py"},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(done)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("cdbash")
+	sess, err := s.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Events) == 0 {
+		t.Fatal("the shell change was not captured at all")
+	}
+	if got := sess.Events[0].Rel; got != "hangman/main.py" {
+		t.Errorf("rel = %q, want hangman/main.py — relative to the session root", got)
+	}
+}
+
+// Edits made with the Edit and Write tools bypass the file walk entirely, so
+// they need the same rule: nothing hidden is recorded.
+func TestPostToolUse_RecordsNothingHidden(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+
+	s, err := store.Open("dots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.EnsureMeta(root)
+
+	for _, rel := range []string{".gitignore", ".env", ".claude/settings.json", ".git/config", "src/.cache/blob"} {
+		if err := hook.PostToolUse(bytes.NewReader(editPayload("dots", root, filepath.Join(root, rel)))); err != nil {
+			t.Fatalf("%s: %v", rel, err)
+		}
+	}
+
+	sess, err := s.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Events) != 0 {
+		t.Errorf("recorded %d hidden edits, want none: %v", len(sess.Events), relsOf(sess))
+	}
+
+	// And an ordinary file still gets through.
+	if err := hook.PostToolUse(bytes.NewReader(editPayload("dots", root, filepath.Join(root, "main.go")))); err != nil {
+		t.Fatal(err)
+	}
+	if sess, _ := s.Read(); len(sess.Events) != 1 {
+		t.Errorf("ordinary edits = %d, want 1", len(sess.Events))
+	}
+}
+
+// A project that lives under a hidden directory is not hidden from itself.
+func TestPostToolUse_RecordsAProjectThatLivesSomewhereHidden(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := filepath.Join(t.TempDir(), ".config", "nvim")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("nvim")
+	s.EnsureMeta(root)
+
+	if err := hook.PostToolUse(bytes.NewReader(editPayload("nvim", root, filepath.Join(root, "init.lua")))); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, _ := s.Read()
+	if len(sess.Events) != 1 || sess.Events[0].Rel != "init.lua" {
+		t.Errorf("recorded %v, want init.lua", relsOf(sess))
+	}
+}
+
+func relsOf(sess store.Session) []string {
+	out := []string{}
+	for _, e := range sess.Events {
+		out = append(out, e.Rel)
+	}
+	return out
+}
+
+// A shell command that names a path elsewhere must not make the walk follow it
+// there. Claude Code's own temp directories churn constantly; the panel is for
+// your project.
+func TestBash_DoesNotFollowCommandsOutOfTheProject(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+
+	start := payload(map[string]any{"session_id": "stray", "cwd": root, "hook_event_name": "SessionStart"})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(elsewhere, "noise.txt"), []byte("churn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The command names the outside directory, which is how the walk used to
+	// acquire it as a root.
+	done := payload(map[string]any{
+		"session_id": "stray", "cwd": root, "hook_event_name": "PostToolUse",
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "cat " + filepath.Join(elsewhere, "noise.txt")},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(done)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("stray")
+	sess, _ := s.Read()
+	for _, e := range sess.Events {
+		if !strings.HasPrefix(e.Path, root) {
+			t.Errorf("recorded %q, outside the project", e.Path)
+		}
+	}
+	if len(sess.Events) != 1 || sess.Events[0].Rel != "main.go" {
+		t.Errorf("recorded %v, want just main.go", relsOf(sess))
+	}
+}
+
+// An index that strayed before the walk was confined is brought back, so an
+// existing session stops reporting the junk it had acquired.
+func TestBash_PrunesRootsAnOlderSessionStrayedTo(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	if err := os.WriteFile(filepath.Join(elsewhere, "noise.txt"), []byte("churn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	start := payload(map[string]any{"session_id": "stale", "cwd": root, "hook_event_name": "SessionStart"})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plant the stray root the way an older lens would have left it.
+	s, _ := store.Open("stale")
+	ix, err := fsindex.Load(s.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.AddRoot(elsewhere)
+	ix.Rescan(time.Time{})
+	if err := ix.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(elsewhere, "noise.txt"), []byte("more churn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := payload(map[string]any{
+		"session_id": "stale", "cwd": root, "hook_event_name": "PostToolUse",
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "true"},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(done)); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, _ := s.Read()
+	if len(sess.Events) != 0 {
+		t.Errorf("recorded %v from a root outside the project", relsOf(sess))
 	}
 }

@@ -22,11 +22,24 @@ const (
 )
 
 // Rendered is a laid-out diff together with what each line is and the line
-// offsets of each hunk, which is what n and N jump between.
+// offsets of each hunk, which is what n and N jump between. HunkIDs says which
+// hunk of the edit each of those offsets belongs to, since a dismissed hunk is
+// left out of the render but still numbered in the edit.
 type Rendered struct {
 	Lines      []string
 	Kinds      []LineKind
 	HunkStarts []int
+	HunkIDs    []int
+}
+
+// StartOf is the line a hunk of the edit begins on, and whether it is shown.
+func (r Rendered) StartOf(hunk int) (int, bool) {
+	for i, id := range r.HunkIDs {
+		if id == hunk {
+			return r.HunkStarts[i], true
+		}
+	}
+	return 0, false
 }
 
 // add appends a line of the given kind.
@@ -54,11 +67,12 @@ func diffBackground(kind LineKind, onCursor, focused bool) string {
 // hunk with ctx lines of surrounding code. Lines are truncated to width so the
 // two-pane layout never wraps.
 func RenderDiff(e capture.Event, prompt string, ctx int, width int) []string {
-	return RenderDiffFull(e, prompt, ctx, width).Lines
+	return RenderDiffFull(e, prompt, ctx, width, nil).Lines
 }
 
-// RenderDiffFull renders a diff and reports where each hunk begins.
-func RenderDiffFull(e capture.Event, prompt string, ctx int, width int) Rendered {
+// RenderDiffFull renders a diff and reports where each hunk begins. Hunks the
+// reader has dismissed are left out.
+func RenderDiffFull(e capture.Event, prompt string, ctx int, width int, hidden Hidden) Rendered {
 	if width < 20 {
 		width = 20
 	}
@@ -81,9 +95,13 @@ func RenderDiffFull(e capture.Event, prompt string, ctx int, width int) Rendered
 	}
 
 	hl := newHighlighter(e.Rel)
-	for _, h := range e.Hunks {
+	for i, h := range e.Hunks {
+		if hidden.Hunk(e.Rel, e.Seq, i) {
+			continue
+		}
 		r.add(LinePlain, "")
 		r.HunkStarts = append(r.HunkStarts, len(r.Lines))
+		r.HunkIDs = append(r.HunkIDs, i)
 		r.add(LinePlain, styGutter.Render(truncateVisible(hunkHeader(h), width)))
 		renderHunk(&r, h, ctx, width, hl)
 	}

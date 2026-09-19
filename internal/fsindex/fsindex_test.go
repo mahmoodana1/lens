@@ -262,3 +262,133 @@ func TestAddRoot_ParentReplacesNestedRoots(t *testing.T) {
 		t.Errorf("roots = %v, want just %q", got, proj)
 	}
 }
+
+// Anything hidden is machinery, not work to read: a dot-directory is never
+// walked and a dot-file is never recorded, whatever it is called.
+func TestRescan_SkipsEverythingHidden(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "main.go"), "package main\n")
+
+	ix := open(t, root)
+
+	write(t, filepath.Join(root, ".gitignore"), "build/\n")
+	write(t, filepath.Join(root, ".env"), "TOKEN=1\n")
+	write(t, filepath.Join(root, ".claude", "settings.json"), "{}\n")
+	write(t, filepath.Join(root, ".terraform", "plugins", "x.bin"), "data\n")
+	write(t, filepath.Join(root, "src", ".cache", "blob"), "data\n")
+	write(t, filepath.Join(root, "src", "app.go"), "package app\n")
+
+	var got []string
+	for _, c := range ix.Rescan(time.Time{}) {
+		rel, _ := filepath.Rel(root, c.Path)
+		got = append(got, filepath.ToSlash(rel))
+	}
+
+	if len(got) != 1 || got[0] != "src/app.go" {
+		t.Errorf("reported %v, want only src/app.go", got)
+	}
+}
+
+// A hidden tree is not descended into at all, so its size cannot cost anything.
+func TestRescan_DoesNotWalkHiddenDirectories(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "main.go"), "package main\n")
+	for i := range 50 {
+		write(t, filepath.Join(root, ".venv", "lib", "mod"+string(rune('a'+i%26))+".py", "f.py"), "x\n")
+	}
+
+	ix := open(t, root)
+	write(t, filepath.Join(root, ".venv", "lib", "new.py"), "x\n")
+
+	if got := ix.Rescan(time.Time{}); len(got) != 0 {
+		t.Errorf("reported %v from inside a hidden directory", got)
+	}
+}
+
+// The walk sweeps whole directories, so it must never leave the project: a
+// command naming a path in /tmp would otherwise turn the panel into a log of
+// other programs' scratch files.
+func TestConfine_RefusesRootsOutsideTheProject(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	write(t, filepath.Join(root, "main.go"), "package main\n")
+	write(t, filepath.Join(elsewhere, "noise.txt"), "churn\n")
+
+	ix, err := fsindex.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Confine(root)
+	ix.AddRoot(root)
+	ix.AddRoot(elsewhere)
+	ix.Rescan(time.Time{})
+
+	write(t, filepath.Join(elsewhere, "noise.txt"), "more churn\n")
+	write(t, filepath.Join(root, "main.go"), "package main // touched\n")
+
+	var got []string
+	for _, c := range ix.Rescan(time.Time{}) {
+		got = append(got, filepath.Base(c.Path))
+	}
+	if len(got) != 1 || got[0] != "main.go" {
+		t.Errorf("reported %v, want only main.go", got)
+	}
+}
+
+// A subdirectory of the project is still fair game: that is how a project
+// created during the session gets watched.
+func TestConfine_AllowsRootsInsideTheProject(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "newproj")
+	write(t, filepath.Join(sub, "main.go"), "package main\n")
+
+	ix, err := fsindex.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Confine(root)
+	ix.AddRoot(sub)
+	ix.Rescan(time.Time{})
+
+	write(t, filepath.Join(sub, "main.go"), "package main // touched\n")
+	if got := ix.Rescan(time.Time{}); len(got) != 1 {
+		t.Errorf("changes = %d, want the subdirectory to be watched", len(got))
+	}
+}
+
+// An index saved before the walk was confined still holds the roots it strayed
+// to, so confining has to prune what is already there.
+func TestConfine_PrunesRootsAlreadySaved(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	write(t, filepath.Join(root, "main.go"), "package main\n")
+	write(t, filepath.Join(elsewhere, "noise.txt"), "churn\n")
+
+	dir := t.TempDir()
+	stale, err := fsindex.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.AddRoot(root)
+	stale.AddRoot(elsewhere) // as an older lens would have
+	stale.Rescan(time.Time{})
+	if err := stale.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	ix, err := fsindex.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Confine(root)
+
+	for _, r := range ix.Roots() {
+		if r == elsewhere {
+			t.Errorf("roots still include %q, outside the project", r)
+		}
+	}
+	write(t, filepath.Join(elsewhere, "noise.txt"), "more churn\n")
+	if got := ix.Rescan(time.Time{}); len(got) != 0 {
+		t.Errorf("reported %v from outside the project", got)
+	}
+}

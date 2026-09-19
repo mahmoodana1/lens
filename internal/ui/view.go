@@ -7,7 +7,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const helpText = "j/k move · / find · ctrl-e/y scroll diff · n/N hunk · J/K file · t toggle · tab focus · q quit"
+const helpText = "j/k move · l open file · dd hide · u undo · / find · J/K file · tab focus · q quit"
+
+const insideHelpText = "j/k move · enter full diff · h back · dd hide · u undo · n/N hunk · q quit"
+
+const panelHelpText = "j/k line · n/N hunk · J/K file · ctrl-f/b page · esc back · q quit"
 
 // View renders the whole panel. It never exceeds the terminal's bounds: the
 // panel shares a window with Claude Code and must not reflow it.
@@ -39,6 +43,12 @@ func (m *Model) footer() string {
 		return m.promptLine()
 	}
 	help := helpText
+	if m.panel {
+		return styHelp.Render(truncateVisible(panelHelpText, m.width))
+	}
+	if m.openFile != "" {
+		help = insideHelpText
+	}
 	if m.focus == focusDiff {
 		help = "diff focused · " + help
 	}
@@ -49,45 +59,59 @@ func (m *Model) footer() string {
 func (m *Model) promptLine() string {
 	left := truncateVisible("/ "+m.filter+"█", m.width)
 	right := truncateVisible(
-		fmt.Sprintf("%d of %d", m.matchCount(), len(m.sess.Events)),
+		fmt.Sprintf("%d of %d", m.matchCount(), len(m.sessionFiles())),
 		maxInt(0, m.width-VisibleWidth(left)-1))
 	gap := maxInt(0, m.width-VisibleWidth(left)-VisibleWidth(right))
 
 	return styIntent.Render(left) + strings.Repeat(" ", gap) + styDim.Render(right)
 }
 
-// matchCount is how many edits the filter keeps, headings aside.
+// matchCount is how many files the filter keeps, and totalFiles how many there
+// are. The prompt counts what the list shows, which is files, not edits.
 func (m *Model) matchCount() int {
 	n := 0
-	for _, e := range m.sess.Events {
-		if _, _, ok := Match(m.filter, e.Rel); ok {
+	for _, rel := range m.sessionFiles() {
+		if _, _, ok := Match(m.filter, rel); ok {
 			n++
 		}
 	}
 	return n
 }
 
-// rowUnread reports whether a row still has something to read. A file heading
-// stands for every edit beneath it.
-func (m *Model) rowUnread(r Row) bool {
-	if r.Kind == RowFileHeader {
-		for _, e := range m.sess.Events {
-			if e.Rel == r.Rel && !m.seen[e.Seq] {
-				return true
-			}
+// sessionFiles is every path the session touched, in first-appearance order.
+func (m *Model) sessionFiles() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, e := range m.sess.Events {
+		if !seen[e.Rel] {
+			seen[e.Rel] = true
+			out = append(out, e.Rel)
 		}
-		return false
 	}
-	return r.Event != nil && !m.seen[r.Event.Seq]
+	return out
 }
 
-// paneLines renders the list and diff side by side.
+// rowUnread reports whether a row still has something to read. A file stands
+// for the change it previews, which is the latest one made to it — so a new
+// edit relights a file you had already read.
+//
+// A hunk is part of the edit listed above it, which carries the mark already;
+// repeating it on every hunk would say the same thing several times over.
+func (m *Model) rowUnread(r Row) bool {
+	return r.Kind != RowHunk && r.Event != nil && !m.seen[r.Event.Seq]
+}
+
+// paneLines renders the list and diff side by side, or — in the diff panel —
+// the diff alone across the whole popup.
 func (m *Model) paneLines(height int) []string {
 	lw := m.listWidth()
 	dw := m.diffWidth()
 
-	m.scrollListIntoView(height)
-	list := m.listLines(height, lw)
+	var list []string
+	if !m.panel {
+		m.scrollListIntoView(height)
+		list = m.listLines(height, lw)
+	}
 	diff := m.renderDiff()
 	focused := m.focus == focusDiff
 
@@ -108,6 +132,10 @@ func (m *Model) paneLines(height int) []string {
 			}
 		}
 
+		if m.panel {
+			out = append(out, right)
+			continue
+		}
 		left = padVisible(left, lw)
 		out = append(out, left+" "+styBorder.Render("│")+" "+right)
 	}
@@ -137,46 +165,47 @@ func (m *Model) listLines(height, width int) []string {
 
 func (m *Model) listRow(i, width int) string {
 	r := m.rows[i]
+
+	if r.Kind == RowDir {
+		// A heading owns the full width: the files under it carry the numbers.
+		return styDim.Render(padVisible(ElidePath(r.Label, width), width))
+	}
+
 	selected := i == m.cursor
 	unread := m.rowUnread(r)
 
 	// Two marker columns: where the cursor is, and whether this is still unread.
 	cursor, dot := " ", " "
 	if selected {
-		cursor = "▸"
+		cursor = "❯"
 	}
 	if unread {
 		dot = "●"
 	}
-	marker := cursor + dot + " "
-
-	var label string
-	var match []int
-	switch r.Kind {
-	case RowFileHeader:
-		label, match = fmt.Sprintf("%s (%d)", r.Rel, r.Edits), r.Match
-	default:
-		if m.view == ByFile {
-			label = "  " + r.Event.Time.Format("15:04:05")
-		} else {
-			label, match = r.Rel, r.Match
-		}
-	}
+	marker := cursor + dot + indent(r)
 
 	stat := shortCounts(r.Added, r.Removed)
 	room := width - VisibleWidth(marker) - VisibleWidth(stripANSI(stat)) - 1
 	if room < 4 {
 		room = 4
 	}
-	label = truncateVisible(label, room)
-	match = trimMatches(match, len([]rune(label)))
+	// A name is identified by its end, so a file gives way at the front and
+	// keeps its extension; a hunk is identified by its line number and the
+	// start of what changed, so it gives way at the end instead.
+	label, cut := r.Label, 0
+	if r.Kind == RowHunk {
+		label = truncateVisible(label, room)
+	} else {
+		label, cut = elideLeft(label, room)
+	}
+	match := shiftMatches(r.Match, cut, len([]rune(label)))
 
-	// Read edits recede; unread ones keep the terminal's own foreground.
+	// Rows already read recede; unread ones keep the terminal's own foreground.
 	base := styRow
 	switch {
 	case selected:
 		base = stySelected
-	case r.Kind == RowFileHeader:
+	case r.Kind == RowEdit:
 		base = styHeading
 	case !unread:
 		base = styDim
@@ -184,6 +213,15 @@ func (m *Model) listRow(i, width int) string {
 
 	pad := maxInt(0, width-VisibleWidth(marker)-VisibleWidth(label)-VisibleWidth(stripANSI(stat)))
 	return base.Render(marker) + highlight(label, match, base) + strings.Repeat(" ", pad) + stat
+}
+
+// indent sets a row under what it belongs to: files under their directory,
+// hunks under the edit that made them.
+func indent(r Row) string {
+	if r.Kind == RowHunk {
+		return "    "
+	}
+	return "  "
 }
 
 // highlight underlines the characters the filter matched, on top of whatever
@@ -214,6 +252,32 @@ func trimMatches(match []int, n int) []int {
 	out := match[:0:0]
 	for _, p := range match {
 		if p < n {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// elideLeft cuts a label down to width from its front, marking the cut with an
+// ellipsis, and reports how many runes went.
+func elideLeft(label string, width int) (string, int) {
+	runes := []rune(label)
+	if len(runes) <= width || width < 2 {
+		return truncateVisible(label, width), 0
+	}
+	cut := len(runes) - (width - 1)
+	return "…" + string(runes[cut:]), cut
+}
+
+// shiftMatches moves the filter's highlight positions along with an elided
+// label, dropping the ones the cut swallowed.
+func shiftMatches(match []int, cut, n int) []int {
+	if cut == 0 {
+		return trimMatches(match, n)
+	}
+	out := match[:0:0]
+	for _, p := range match {
+		if p -= cut - 1; p > 0 && p < n { // 0 is the ellipsis
 			out = append(out, p)
 		}
 	}
@@ -251,8 +315,13 @@ func (m *Model) helpLines(height int) []string {
 		{"ctrl-f / ctrl-b", "scroll the diff a page, either pane focused"},
 		{"gg / G", "first / last"},
 		{"n / N", "next / previous hunk"},
-		{"J / K", "next / previous file"},
-		{"t", "toggle view (timeline ⇄ by file)"},
+		{"J / K", "next / previous file, in the panel too"},
+		{"l / space", "open the file: its edits and the hunks they made"},
+		{"h / esc", "back out a level"},
+		{"enter", "open the file, then its full-width diff panel"},
+		{"f", "the diff panel from anywhere"},
+		{"dd", "clear the file, edit or hunk out of the view"},
+		{"u / ctrl-r", "undo / redo one dd at a time"},
 		{"+ / -", "more / less surrounding context"},
 		{"tab", "move focus between list and diff (the diff gets a cursor)"},
 		{"●", "an edit you have not looked at yet"},
