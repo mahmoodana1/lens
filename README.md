@@ -47,12 +47,14 @@ stay bright; once you land on one it dims — and a file lights up again when
 Claude touches it afresh. Read state is kept per session, so closing
 the popup and reopening it does not present everything as new again.
 
-The diff is coloured with the same tokyonight-moon palette as the editor,
+The diff is coloured with the same palette as the editor beside it,
 syntax and all, including added and removed lines — what marks those is a wash
 of green or red behind the code rather than flattening it to one colour. The
 colours are not an approximation of the theme, nor a reading of its source:
-they are the values a running nvim gave when asked what it draws each highlight
-group with, group by group, which is the only account that cannot go stale. The
+they are asked of the editor itself. When the panel opens it queries the nvim
+working on that project for what it draws each highlight group with, group by
+group, so the diff matches whatever colourscheme you actually use. With no
+editor running it falls back to a built-in tokyonight-moon. The
 washes are its `DiffAdd`, `DiffDelete` and `CursorLine`, taken whole. Comments
 and docstrings come out italic, as they do in the editor.
 
@@ -73,15 +75,57 @@ Edits are recorded silently while Claude works and shown once, at the end:
 opening a popup mid-turn would take the session away from you while you are
 still talking to it.
 
+## Requirements
+
+- **tmux.** The panel is a tmux popup over your session; without tmux there is
+  nowhere for it to open. Run Claude Code inside tmux.
+- **Claude Code**, installed and run at least once, so `~/.claude` exists.
+- **Go 1.25 or newer**, to build from source — or take a prebuilt binary and
+  skip Go entirely.
+- **nvim**, optional: `o` hands a file to the editor already open on the
+  project, and the diff takes its colours from that editor when one is running.
+
 ## Install
+
+From a release, with no Go needed:
+
+```sh
+curl -L -o ~/.local/bin/lens \
+  https://github.com/mahmoodana1/lens/releases/latest/download/lens_linux_amd64
+chmod +x ~/.local/bin/lens
+~/.local/bin/lens hooks install
+```
+
+Or from source:
 
 ```sh
 ./install.sh
 ```
 
-This builds `~/.local/bin/lens` and adds five hooks to `~/.claude/settings.json`
-(backing it up first, and preserving anything already there). Restart Claude Code
-to load them. The panel then appears on its own.
+Either way this puts `lens` in `~/.local/bin` and adds five hooks to
+`~/.claude/settings.json` — backing it up first, and leaving every other tool's
+hooks alone. Restart Claude Code to load them. The panel then appears on its
+own. Run it again to upgrade: lens replaces its own hook entries rather than
+stacking up new ones.
+
+If nothing seems to happen, ask:
+
+```sh
+lens doctor
+```
+
+It checks each thing that has to be true — hooks wired, tmux reachable, this
+project not muted, edits actually landing — and says which one is not, with the
+command to fix it.
+
+To remove it again:
+
+```sh
+./uninstall.sh
+```
+
+That takes the hooks out and deletes the binary. Your capture logs are left
+where they are, and it tells you where that is.
 
 To bring it back after you have closed it, bind a key to `lens popup`:
 
@@ -134,6 +178,17 @@ what it missed. Muted projects are listed in
 | `●` | marks a change you have not looked at yet |
 | `?` | help |
 | `q` | close the popup (the capture stays; reopen with your `lens popup` key) |
+
+## Commands
+
+| Command | |
+|---|---|
+| `lens` | the panel itself, as the popup runs it |
+| `lens popup` | open the panel over the current tmux pane, for that pane's project |
+| `lens auto [on\|off\|toggle\|status]` | whether the panel opens by itself, per project |
+| `lens doctor` | why the panel is not showing anything |
+| `lens hooks install\|remove` | wire it into Claude Code, or take it out |
+| `lens --version` | |
 
 ## How it works
 

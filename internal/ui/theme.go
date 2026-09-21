@@ -7,6 +7,7 @@ import (
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mahmood/lens/internal/editor"
 	"github.com/rivo/uniseg"
 )
 
@@ -43,35 +44,105 @@ const (
 	tnDiffText     = "#394b70" // DiffText bg
 )
 
+// palette is the colours actually in use: the built-in scheme above, with
+// anything the reader's own editor told us overlaid on top.
+type palette struct {
+	fg, bg                                       string
+	comment, keyword, function, typ, str, number string
+	constant, operator, punct, property, module  string
+	builtin, selfRef, regex, doc, errCol, label  string
+	lineNr, cursorLine, diffAdd, diffDelete      string
+	commentItalic                                bool
+}
+
+// builtIn is the scheme to fall back on when there is no editor to ask.
+func builtIn() palette {
+	return palette{
+		fg: tnFg, bg: tnBg,
+		comment: tnComment, keyword: tnMagenta, function: tnBlue, typ: tnBlue1,
+		str: tnGreen, number: tnOrange, constant: tnBlue1, operator: tnBlue5,
+		punct: tnFgDark, property: tnTeal, module: tnCyan, builtin: tnBlue1,
+		selfRef: tnRed, regex: tnRegex, doc: tnYellow, errCol: tnError, label: tnBlue,
+		lineNr: tnLineNr, cursorLine: tnCursorLine,
+		diffAdd: tnDiffAdd, diffDelete: tnDiffDelete,
+		commentItalic: true,
+	}
+}
+
+var pal = builtIn()
+
+// Adopt takes on the colours the reader's editor draws code with, keeping the
+// built-in value for anything the editor says nothing about.
+//
+// A colourscheme written down here is right for exactly one reader. The editor
+// is asked instead, so the diff matches whatever they actually use — and with
+// no editor to ask, nothing changes at all.
+func Adopt(c editor.Colours) {
+	pal = builtIn()
+
+	for dst, got := range map[*string]string{
+		&pal.fg: c.Fg, &pal.bg: c.Bg,
+		&pal.comment: c.Comment, &pal.keyword: c.Keyword,
+		&pal.function: c.Function, &pal.typ: c.Type,
+		&pal.str: c.String, &pal.number: c.Number,
+		&pal.constant: c.Constant, &pal.operator: c.Operator,
+		&pal.punct: c.Punct, &pal.property: c.Property,
+		&pal.module: c.Module, &pal.builtin: c.Builtin,
+		&pal.selfRef: c.SelfRef, &pal.regex: c.Regex,
+		&pal.doc: c.Doc, &pal.errCol: c.Error, &pal.label: c.Label,
+		&pal.lineNr: c.LineNr, &pal.cursorLine: c.CursorLine,
+		&pal.diffAdd: c.DiffAdd, &pal.diffDelete: c.DiffDelete,
+	} {
+		if got != "" {
+			*dst = got
+		}
+	}
+	// Follow the editor on italics only if it answered about comments at all.
+	if c.Comment != "" {
+		pal.commentItalic = c.CommentItalic
+	}
+	apply()
+}
+
 // The washes behind changed lines are the editor's own DiffAdd, DiffDelete and
 // CursorLine — taken whole rather than mixed here, so a changed line in the
 // panel is the colour a changed line is in the editor.
-var (
-	bgAdd    = tnDiffAdd
-	bgDel    = tnDiffDelete
-	bgCursor = tnCursorLine
-)
+var bgAdd, bgDel, bgCursor string
 
 var (
-	colAdd     = lipgloss.Color(tnGreen)
-	colDel     = lipgloss.Color(tnRed)
-	colDim     = lipgloss.Color(tnComment)
-	colAccent  = lipgloss.Color(tnBlue)
-	colHeading = lipgloss.Color(tnBlue)
+	colAdd, colDel, colDim, colHeading lipgloss.Color
+
+	styHeading, styIntent, styAdd, styDel   lipgloss.Style
+	styGutter, styHunk, styDim, stySelected lipgloss.Style
+	styRow, styHelp, styBorder              lipgloss.Style
+)
+
+// apply rebuilds everything drawn from the palette.
+func apply() {
+	bgAdd, bgDel, bgCursor = pal.diffAdd, pal.diffDelete, pal.cursorLine
+
+	colAdd = lipgloss.Color(pal.str)
+	colDel = lipgloss.Color(pal.selfRef)
+	colDim = lipgloss.Color(pal.comment)
+	colHeading = lipgloss.Color(pal.function)
 
 	styHeading = lipgloss.NewStyle().Foreground(colHeading).Bold(true) // Title
-	styIntent  = lipgloss.NewStyle().Foreground(lipgloss.Color(tnTeal)).Italic(true)
-	styAdd     = lipgloss.NewStyle().Foreground(colAdd)
-	styDel     = lipgloss.NewStyle().Foreground(colDel)
+	styIntent = lipgloss.NewStyle().Foreground(lipgloss.Color(pal.property)).Italic(true)
+	styAdd = lipgloss.NewStyle().Foreground(colAdd)
+	styDel = lipgloss.NewStyle().Foreground(colDel)
 	// LineNr and CursorLineNr: the numbers recede, the selection does not.
-	styGutter   = lipgloss.NewStyle().Foreground(lipgloss.Color(tnLineNr))
-	styHunk     = lipgloss.NewStyle().Foreground(lipgloss.Color(tnBlue5))
-	styDim      = lipgloss.NewStyle().Foreground(colDim)
-	stySelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(tnCursorLineNr))
-	styRow      = lipgloss.NewStyle().Foreground(lipgloss.Color(tnFg))
-	styHelp     = lipgloss.NewStyle().Foreground(colDim)
-	styBorder   = lipgloss.NewStyle().Foreground(lipgloss.Color(tnLineNr))
-)
+	styGutter = lipgloss.NewStyle().Foreground(lipgloss.Color(pal.lineNr))
+	styHunk = lipgloss.NewStyle().Foreground(lipgloss.Color(pal.operator))
+	styDim = lipgloss.NewStyle().Foreground(colDim)
+	stySelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(pal.number))
+	styRow = lipgloss.NewStyle().Foreground(lipgloss.Color(pal.fg))
+	styHelp = lipgloss.NewStyle().Foreground(colDim)
+	styBorder = lipgloss.NewStyle().Foreground(lipgloss.Color(pal.lineNr))
+
+	editorStyle = syntaxStyle()
+}
+
+func init() { apply() }
 
 // colours reports whether the terminal takes colour at all. Backgrounds are
 // written by hand rather than through lipgloss, so they need the same gate.
@@ -90,78 +161,86 @@ var colours = lipgloss.NewStyle().Foreground(lipgloss.Color(tnRed)).Render("x") 
 // them are.
 func syntaxStyle() *chroma.Style {
 	st, err := chroma.NewStyle("tokyonight-moon", chroma.StyleEntries{
-		chroma.Background: tnFg + " bg:" + tnBg,
-		chroma.Text:       tnFg,
+		chroma.Background: pal.fg + " bg:" + pal.bg,
+		chroma.Text:       pal.fg,
 
-		chroma.Comment:        "italic " + tnComment,
-		chroma.CommentPreproc: tnCyan, // PreProc
-		chroma.CommentSpecial: "italic " + tnComment,
+		chroma.Comment:        italicIf(pal.commentItalic) + pal.comment,
+		chroma.CommentPreproc: pal.module, // PreProc
+		chroma.CommentSpecial: italicIf(pal.commentItalic) + pal.comment,
 
-		chroma.Keyword:            tnMagenta, // @keyword.function, .conditional, .repeat
-		chroma.KeywordConstant:    tnBlue1,   // @constant.builtin: true, false, nil
-		chroma.KeywordDeclaration: tnMagenta,
-		chroma.KeywordNamespace:   tnCyan, // @keyword.import
-		chroma.KeywordPseudo:      tnBlue1,
-		chroma.KeywordReserved:    tnMagenta,
-		chroma.KeywordType:        tnBlue1, // @type.builtin sits close to Type
+		chroma.Keyword:            pal.keyword,  // @keyword.function, .conditional, .repeat
+		chroma.KeywordConstant:    pal.constant, // @constant.builtin: true, false, nil
+		chroma.KeywordDeclaration: pal.keyword,
+		chroma.KeywordNamespace:   pal.module, // @keyword.import
+		chroma.KeywordPseudo:      pal.constant,
+		chroma.KeywordReserved:    pal.keyword,
+		chroma.KeywordType:        pal.typ, // @type.builtin sits close to Type
 
-		chroma.Name:                 tnFg, // @variable
-		chroma.NameAttribute:        tnCyan,
-		chroma.NameBuiltin:          tnBlue1, // @function.builtin
-		chroma.NameBuiltinPseudo:    tnRed,   // @variable.builtin: self, this
-		chroma.NameClass:            tnBlue1, // Type
-		chroma.NameConstant:         tnOrange,
-		chroma.NameDecorator:        tnCyan, // @attribute
-		chroma.NameEntity:           tnCyan,
-		chroma.NameException:        tnMagenta,
-		chroma.NameFunction:         tnBlue,
-		chroma.NameFunctionMagic:    tnBlue1,
-		chroma.NameLabel:            tnBlue,
-		chroma.NameNamespace:        tnCyan, // @module
-		chroma.NameOther:            tnFg,
-		chroma.NameProperty:         tnTeal, // @property
-		chroma.NameTag:              tnBlue1,
-		chroma.NameVariable:         tnFg,
-		chroma.NameVariableClass:    tnTeal,
-		chroma.NameVariableGlobal:   tnTeal,
-		chroma.NameVariableInstance: tnTeal, // @variable.member
-		chroma.NameVariableMagic:    tnRed,
+		chroma.Name:                 pal.fg, // @variable
+		chroma.NameAttribute:        pal.module,
+		chroma.NameBuiltin:          pal.builtin, // @function.builtin
+		chroma.NameBuiltinPseudo:    pal.selfRef, // @variable.builtin: self, this
+		chroma.NameClass:            pal.typ,     // Type
+		chroma.NameConstant:         pal.number,
+		chroma.NameDecorator:        pal.module, // @attribute
+		chroma.NameEntity:           pal.module,
+		chroma.NameException:        pal.keyword,
+		chroma.NameFunction:         pal.function,
+		chroma.NameFunctionMagic:    pal.constant,
+		chroma.NameLabel:            pal.label,
+		chroma.NameNamespace:        pal.module, // @module
+		chroma.NameOther:            pal.fg,
+		chroma.NameProperty:         pal.property, // @property
+		chroma.NameTag:              pal.constant,
+		chroma.NameVariable:         pal.fg,
+		chroma.NameVariableClass:    pal.property,
+		chroma.NameVariableGlobal:   pal.property,
+		chroma.NameVariableInstance: pal.property, // @variable.member
+		chroma.NameVariableMagic:    pal.selfRef,
 
-		chroma.Literal:                tnOrange,
-		chroma.LiteralDate:            tnOrange,
-		chroma.LiteralNumber:          tnOrange,
-		chroma.LiteralString:          tnGreen,
-		chroma.LiteralStringAffix:     tnMagenta,
-		chroma.LiteralStringChar:      tnGreen, // Character
-		chroma.LiteralStringDoc:       "italic " + tnYellow,
-		chroma.LiteralStringEscape:    tnMagenta, // @string.escape
-		chroma.LiteralStringInterpol:  tnMagenta,
-		chroma.LiteralStringRegex:     tnRegex,
-		chroma.LiteralStringSymbol:    tnGreen,
-		chroma.LiteralStringDelimiter: tnGreen,
-		chroma.LiteralStringBacktick:  tnGreen,
-		chroma.LiteralStringDouble:    tnGreen,
-		chroma.LiteralStringSingle:    tnGreen,
-		chroma.LiteralStringHeredoc:   tnGreen,
-		chroma.LiteralStringOther:     tnGreen,
+		chroma.Literal:                pal.number,
+		chroma.LiteralDate:            pal.number,
+		chroma.LiteralNumber:          pal.number,
+		chroma.LiteralString:          pal.str,
+		chroma.LiteralStringAffix:     pal.keyword,
+		chroma.LiteralStringChar:      pal.str, // Character
+		chroma.LiteralStringDoc:       "italic " + pal.doc,
+		chroma.LiteralStringEscape:    pal.keyword, // @string.escape
+		chroma.LiteralStringInterpol:  pal.keyword,
+		chroma.LiteralStringRegex:     pal.regex,
+		chroma.LiteralStringSymbol:    pal.str,
+		chroma.LiteralStringDelimiter: pal.str,
+		chroma.LiteralStringBacktick:  pal.str,
+		chroma.LiteralStringDouble:    pal.str,
+		chroma.LiteralStringSingle:    pal.str,
+		chroma.LiteralStringHeredoc:   pal.str,
+		chroma.LiteralStringOther:     pal.str,
 
-		chroma.Operator:     tnBlue5,
-		chroma.OperatorWord: tnBlue5,  // @keyword.operator
-		chroma.Punctuation:  tnFgDark, // @punctuation.bracket
+		chroma.Operator:     pal.operator,
+		chroma.OperatorWord: pal.operator, // @keyword.operator
+		chroma.Punctuation:  pal.punct,    // @punctuation.bracket
 
-		chroma.GenericDeleted:    tnRed,
-		chroma.GenericInserted:   tnGreen,
+		chroma.GenericDeleted:    pal.selfRef,
+		chroma.GenericInserted:   pal.str,
 		chroma.GenericEmph:       "italic",
 		chroma.GenericStrong:     "bold",
-		chroma.GenericHeading:    "bold " + tnBlue,
-		chroma.GenericSubheading: "bold " + tnBlue1,
+		chroma.GenericHeading:    "bold " + pal.function,
+		chroma.GenericSubheading: "bold " + pal.constant,
 
-		chroma.Error: tnError,
+		chroma.Error: pal.errCol,
 	})
 	if err != nil {
 		return styles.Fallback
 	}
 	return st
+}
+
+// italicIf is the chroma style prefix for a group the editor italicises.
+func italicIf(yes bool) string {
+	if yes {
+		return "italic "
+	}
+	return ""
 }
 
 // entryStyle turns one of the style's entries into the way it is drawn. Colour

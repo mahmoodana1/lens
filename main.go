@@ -10,6 +10,9 @@
 //	lens popup            open that popup over the current tmux pane, for
 //	                      the project that pane is working in
 //	lens auto [on|off]    whether the popup opens by itself, for this project
+//	lens doctor           check why the panel is not showing anything
+//	lens hooks install    wire it into Claude Code (the installer runs this)
+//	lens hooks remove     take it back out again
 package main
 
 import (
@@ -17,17 +20,21 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mahmood/lens/internal/doctor"
 	"github.com/mahmood/lens/internal/editor"
 	"github.com/mahmood/lens/internal/hook"
+	"github.com/mahmood/lens/internal/hooks"
 	"github.com/mahmood/lens/internal/pane"
 	"github.com/mahmood/lens/internal/store"
 	"github.com/mahmood/lens/internal/ui"
 )
 
-const version = "0.1.0"
+// version is the build, overridden at release time with -X main.version.
+var version = "0.1.0"
 
 func main() {
 	// Hooks run on every edit of every session. They must never take a session
@@ -41,6 +48,19 @@ func main() {
 	// setting landed, which is what the tmux binding shows.
 	if len(os.Args) > 1 && os.Args[1] == "auto" {
 		if err := runAuto(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "lens:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// `lens doctor` and `lens hooks` are for setting it up and working out why
+	// it is not working. Neither opens a panel.
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		os.Exit(runDoctor(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "hooks" {
+		if err := runHooks(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "lens:", err)
 			os.Exit(1)
 		}
@@ -84,8 +104,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Opening a change where it lives is the panel's one reach outside itself.
+	// The diff should read like the file open in the editor, so the colours
+	// come from the editor rather than from a scheme written down here. With
+	// none running, the built-in palette stands.
 	sessionProject := m.Project()
+	if srv, err := editor.For(sessionProject, editor.Sockets()); err == nil {
+		if colours, err := editor.Palette(srv); err == nil {
+			ui.Adopt(colours)
+		}
+	}
+
+	// Opening a change where it lives is the panel's one reach outside itself.
 	m.OnOpen(func(file string, line int) {
 		err := editor.Show(editor.Request{
 			Project: sessionProject, File: file, Line: line,
@@ -200,6 +229,109 @@ func parseAutoArgs(args []string) (action, dir string, err error) {
 	// Resolved here so the confirmation names the project the setting is filed
 	// under, not the "." or "../.." it was reached by.
 	return action, store.ProjectKey(dir), nil
+}
+
+// settingsPath is where Claude Code keeps its hooks.
+func settingsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".claude/settings.json"
+	}
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+// self is the lens being run, by the path it was found at.
+func self() string {
+	if p, err := os.Executable(); err == nil {
+		return p
+	}
+	return "lens"
+}
+
+// runDoctor reports why the panel may not be showing anything, and returns the
+// exit status: 0 when all is well, 1 when something needs attention.
+func runDoctor(args []string) int {
+	fs := flag.NewFlagSet("lens doctor", flag.ContinueOnError)
+	project := fs.String("project", "", "project to answer for (default: the working directory)")
+	settings := fs.String("settings", "", "Claude Code settings file")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *settings == "" {
+		*settings = settingsPath()
+	}
+
+	r := doctor.Run(doctor.Options{
+		Project:  projectOrHere(*project),
+		Settings: *settings,
+		Binary:   self(),
+		Version:  version,
+	})
+
+	mark := map[doctor.Level]string{doctor.OK: "✓", doctor.Warn: "!", doctor.Fail: "✗"}
+	for _, c := range r.Checks {
+		fmt.Printf("%s %-11s %s\n", mark[c.Level], c.Name, c.Detail)
+		if c.Fix != "" && c.Level != doctor.OK {
+			fmt.Printf("  %-11s → %s\n", "", c.Fix)
+		}
+	}
+
+	switch r.Worst() {
+	case doctor.OK:
+		fmt.Println("\nNothing wrong here.")
+		return 0
+	case doctor.Warn:
+		fmt.Println("\nWorking, but see the notes above.")
+		return 1
+	default:
+		fmt.Println("\nThe panel will not work until the failures above are fixed.")
+		return 1
+	}
+}
+
+// runHooks wires lens into Claude Code's settings, or takes it out. The
+// installer calls it so that the settings are only ever edited by one piece of
+// code, which is also the code the uninstaller and the doctor use.
+func runHooks(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: lens hooks install|remove [--settings FILE]")
+	}
+	verb := args[0]
+
+	fs := flag.NewFlagSet("lens hooks", flag.ContinueOnError)
+	settings := fs.String("settings", "", "Claude Code settings file")
+	binary := fs.String("binary", "", "the lens the hooks should run (default: this one)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *settings == "" {
+		*settings = settingsPath()
+	}
+	if *binary == "" {
+		*binary = self()
+	}
+
+	switch verb {
+	case "install":
+		if err := hooks.Install(*settings, *binary); err != nil {
+			return err
+		}
+		fmt.Printf("lens: %d hooks installed in %s\n", len(hooks.Events()), *settings)
+		return nil
+	case "remove":
+		n, err := hooks.Remove(*settings)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			fmt.Println("lens: no lens hooks were installed")
+			return nil
+		}
+		fmt.Printf("lens: %d hooks removed from %s\n", n, *settings)
+		return nil
+	default:
+		return errors.New("usage: lens hooks install|remove [--settings FILE]")
+	}
 }
 
 // runPopup opens the panel for a session in a tmux popup and returns.

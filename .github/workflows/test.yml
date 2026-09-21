@@ -1,0 +1,45 @@
+name: test
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The panel lives in a tmux popup and hands files to nvim, so the tests
+      # that cover those drive the real things. They skip themselves when the
+      # tools are absent, which would quietly cover half the suite in nothing.
+      - name: install tmux and neovim
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux neovim
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^$' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      # A skipped test proves nothing, so say how many skipped and why.
+      - name: report skips
+        if: always()
+        run: go test ./... -v 2>&1 | grep -c -- '--- SKIP' || true

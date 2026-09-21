@@ -2,64 +2,86 @@
 # Build lens and wire it into Claude Code's hooks.
 #
 # Existing settings are backed up first and merged into, never replaced.
+# Run it again to upgrade: lens's own hook entries are replaced, and anything
+# else in the file is left alone.
 set -euo pipefail
 
 BIN="${HOME}/.local/bin/lens"
 SETTINGS="${HOME}/.claude/settings.json"
+GO_MIN="1.25"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+die() {
+  echo "lens: $1" >&2
+  shift
+  for line in "$@"; do echo "     $line" >&2; done
+  exit 1
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Everything is checked before anything is written, so a missing tool leaves
+# the machine as it was rather than half-installed.
+
+have go || die "needs Go $GO_MIN or newer to build, and go is not installed." \
+  "arch:    sudo pacman -S go" \
+  "debian:  sudo apt install golang" \
+  "macos:   brew install go" \
+  "or take a prebuilt binary instead:" \
+  "  https://github.com/mahmoodana1/lens/releases"
+
+# Sort -V puts the lower version first; if that is not the minimum, go is older.
+go_version="$(go env GOVERSION 2>/dev/null || echo unknown)"
+go_version="${go_version#go}"
+if [[ "$go_version" != unknown ]]; then
+  lowest="$(printf '%s\n%s\n' "$GO_MIN" "$go_version" | sort -V | head -1)"
+  [[ "$lowest" == "$GO_MIN" ]] || die \
+    "needs Go $GO_MIN or newer; this is go$go_version." \
+    "upgrade Go, or take a prebuilt binary:" \
+    "  https://github.com/mahmoodana1/lens/releases"
+fi
+
+have tmux || die "needs tmux: the panel is a tmux popup over your session." \
+  "arch:    sudo pacman -S tmux" \
+  "debian:  sudo apt install tmux" \
+  "macos:   brew install tmux"
+
+[[ -d "${HOME}/.claude" ]] || die \
+  "cannot find ~/.claude, so Claude Code does not look installed." \
+  "Install Claude Code first, run it once, then try again."
 
 echo "building $BIN"
 mkdir -p "$(dirname "$BIN")"
 (cd "$here" && go build -o "$BIN" .)
 
 if [[ ! -f "$SETTINGS" ]]; then
-  echo '{}' > "$SETTINGS"
+  echo '{}' >"$SETTINGS"
 fi
 
 backup="${SETTINGS}.bak-$(date +%Y%m%d%H%M%S)"
 cp "$SETTINGS" "$backup"
 echo "backed up settings to $backup"
 
-python3 - "$SETTINGS" "$BIN" <<'PY'
-import json, sys
+# lens edits the settings itself: the hooks it needs are its own business, and
+# it can put them back the same way when uninstalling.
+if ! "$BIN" hooks install --settings "$SETTINGS"; then
+  cp "$backup" "$SETTINGS"
+  die "could not install the hooks; your settings have been put back."
+fi
 
-settings_path, binary = sys.argv[1], sys.argv[2]
-with open(settings_path) as f:
-    settings = json.load(f)
-
-hooks = settings.setdefault("hooks", {})
-
-# Bash is matched too: Claude often writes files with heredocs and sed rather
-# than the Write tool, and those changes are found by looking at the project.
-wanted = {
-    "PostToolUse":      ("Edit|Write|MultiEdit|NotebookEdit|Bash", f"{binary} hook post-tool-use"),
-    "UserPromptSubmit": (None,                                     f"{binary} hook prompt"),
-    "SessionStart":     (None,                                     f"{binary} hook session-start"),
-    "SessionEnd":       (None,                                     f"{binary} hook session-end"),
-    "Stop":             (None,                                     f"{binary} hook stop"),
-}
-
-for event, (matcher, command) in wanted.items():
-    entries = hooks.setdefault(event, [])
-
-    # Drop any lens entry from a previous install, leaving other tools alone.
-    for entry in entries:
-        entry["hooks"] = [h for h in entry.get("hooks", []) if "lens hook" not in h.get("command", "")]
-    entries[:] = [e for e in entries if e.get("hooks")]
-
-    entry = {"hooks": [{"type": "command", "command": command}]}
-    if matcher:
-        entry["matcher"] = matcher
-    entries.append(entry)
-
-with open(settings_path, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-print("hooks installed")
-PY
-
-python3 -c "import json,sys; json.load(open('$SETTINGS')); print('settings.json is valid')"
 echo
 echo "Done. Restart Claude Code (or start a new session) for the hooks to load."
 echo "The panel pops up by itself when Claude finishes a turn that changed files."
-echo "Bind a key to reopen it, e.g. in ~/.tmux.conf:  bind e run-shell \"$BIN popup\""
+echo
+echo "Add these to ~/.tmux.conf to reopen it and to mute a project:"
+echo "  bind e run-shell \"cd '#{pane_current_path}' && $BIN popup\""
+echo "  bind E run-shell \"cd '#{pane_current_path}' && $BIN auto toggle\""
+echo
+echo "If anything looks wrong, run:  lens doctor"
+
+if ! [[ ":$PATH:" == *":${HOME}/.local/bin:"* ]]; then
+  echo
+  echo "Note: ~/.local/bin is not on your PATH, so \`lens\` will not be found by"
+  echo "name. The hooks use the full path and work regardless. To fix it, add:"
+  echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+fi

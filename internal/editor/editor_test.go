@@ -18,8 +18,18 @@ func startNvim(t *testing.T, dir string) string {
 	if _, err := exec.LookPath("nvim"); err != nil {
 		t.Skip("nvim not installed")
 	}
+	return startNvimRC(t, dir, "NONE")
+}
+
+// startNvimRC is startNvim with a particular config, so a test can pin the
+// colours it expects to read back.
+func startNvimRC(t *testing.T, dir, rc string) string {
+	t.Helper()
+	if _, err := exec.LookPath("nvim"); err != nil {
+		t.Skip("nvim not installed")
+	}
 	sock := filepath.Join(t.TempDir(), "nvim.sock")
-	cmd := exec.Command("nvim", "--headless", "--listen", sock, "-u", "NONE")
+	cmd := exec.Command("nvim", "--headless", "--listen", sock, "-u", rc)
 	cmd.Dir = dir
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot start nvim: %v", err)

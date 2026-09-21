@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Prebuilt binaries are the point: a reader should not need a Go
+      # toolchain to try the panel. Pure Go, so cross-compiling needs no cgo.
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            out="dist/lens_${os}_${arch}"
+            echo "building $out"
+            GOOS="$os" GOARCH="$arch" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=${TAG#v}" \
+              -o "$out" .
+          done
+          (cd dist && sha256sum lens_* > SHA256SUMS)
+          ls -l dist
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file - <<'NOTES'
+          Download the binary for your machine, make it executable, and let it
+          wire itself into Claude Code:
+
+              curl -L -o ~/.local/bin/lens \
+                https://github.com/mahmoodana1/lens/releases/latest/download/lens_linux_amd64
+              chmod +x ~/.local/bin/lens
+              ~/.local/bin/lens hooks install
+
+          Then restart Claude Code. `lens doctor` says whether it worked.
+
+          Requires tmux. Checksums are in SHA256SUMS.
+          NOTES
