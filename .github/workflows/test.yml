@@ -28,10 +28,20 @@ jobs:
       # from the editor over its socket, and a neovim old enough not to report
       # GUI colours would make those tests skip themselves — which is the same
       # as not having them.
+      #
+      # Pinned to a version and a digest, not to "stable": this downloads a
+      # binary and then runs it, so what it runs should not be able to change
+      # underneath the build. Neovim publishes no checksum of its own, so the
+      # digest here was taken from this exact asset. If it ever stops matching,
+      # the build stops rather than running something else.
       - name: install neovim
+        env:
+          NVIM_VERSION: v0.12.5
+          NVIM_SHA256: bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
         run: |
           curl -fsSL -o /tmp/nvim.tar.gz \
-            https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz
+            "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-x86_64.tar.gz"
+          echo "${NVIM_SHA256}  /tmp/nvim.tar.gz" | sha256sum -c -
           sudo tar -C /opt -xzf /tmp/nvim.tar.gz
           echo "/opt/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
 
