@@ -19,10 +19,26 @@ jobs:
       # The panel lives in a tmux popup and hands files to nvim, so the tests
       # that cover those drive the real things. They skip themselves when the
       # tools are absent, which would quietly cover half the suite in nothing.
-      - name: install tmux and neovim
+      - name: install tmux
         run: |
           sudo apt-get update
-          sudo apt-get install -y tmux neovim
+          sudo apt-get install -y tmux
+
+      # From the project's own release rather than apt: the palette is read
+      # from the editor over its socket, and a neovim old enough not to report
+      # GUI colours would make those tests skip themselves — which is the same
+      # as not having them.
+      - name: install neovim
+        run: |
+          curl -fsSL -o /tmp/nvim.tar.gz \
+            https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz
+          sudo tar -C /opt -xzf /tmp/nvim.tar.gz
+          echo "/opt/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: versions
+        run: |
+          tmux -V
+          nvim --version | head -1
 
       - name: gofmt
         run: |
