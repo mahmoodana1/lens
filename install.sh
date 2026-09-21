@@ -50,6 +50,27 @@ have tmux || die "needs tmux: the panel is a tmux popup over your session." \
   "cannot find ~/.claude, so Claude Code does not look installed." \
   "Install Claude Code first, run it once, then try again."
 
+cat <<NOTICE
+lens changes three things on this machine, and nothing else:
+
+  $BIN
+      a binary built from this checkout
+
+  $SETTINGS
+      five Claude Code hooks added. Other tools' hooks and your own
+      settings in that file are left alone, and a copy of it as it is
+      now is kept beside it.
+
+  ${XDG_STATE_HOME:-${HOME}/.local/state}/lens
+      what Claude changes, and the prompts that caused it, so the panel
+      can show them. Swept 24 hours after a session stops changing.
+
+Your code is only ever read, never written. Nothing hidden — anything under
+a dot, like .git or .env — is recorded at all. lens makes no network
+connections. To undo all of it: ./uninstall.sh
+
+NOTICE
+
 echo "building $BIN"
 mkdir -p "$(dirname "$BIN")"
 # -buildvcs=false: the stamped commit is never read back, and asking git for it
@@ -58,23 +79,22 @@ mkdir -p "$(dirname "$BIN")"
 # with "error obtaining VCS status" and nothing lost by skipping it.
 (cd "$here" && go build -buildvcs=false -o "$BIN" .)
 
-if [[ ! -f "$SETTINGS" ]]; then
-  echo '{}' >"$SETTINGS"
+restore=""
+if [[ -f "$SETTINGS" ]]; then
+  restore="$(mktemp)"
+  cp "$SETTINGS" "$restore"
 fi
 
-backup="${SETTINGS}.bak-$(date +%Y%m%d%H%M%S)"
-cp "$SETTINGS" "$backup"
-echo "backed up settings to $backup"
-
-# lens edits the settings itself: the hooks it needs are its own business, and
-# it can put them back the same way when uninstalling.
+# lens edits the settings itself: the hooks it needs are its own business, it
+# reports exactly what it changed, and it can put them back the same way when
+# uninstalling.
 if ! "$BIN" hooks install --settings "$SETTINGS"; then
-  cp "$backup" "$SETTINGS"
+  [[ -n "$restore" ]] && cp "$restore" "$SETTINGS"
+  rm -f "$restore"
   die "could not install the hooks; your settings have been put back."
 fi
+rm -f "$restore"
 
-echo
-echo "Done. Restart Claude Code (or start a new session) for the hooks to load."
 echo "The panel pops up by itself when Claude finishes a turn that changed files."
 echo
 echo "Add these to ~/.tmux.conf to reopen it and to mute a project:"

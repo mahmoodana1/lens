@@ -9,17 +9,19 @@ BIN="${HOME}/.local/bin/lens"
 SETTINGS="${HOME}/.claude/settings.json"
 
 if [[ -f "$SETTINGS" ]]; then
-  backup="${SETTINGS}.bak-$(date +%Y%m%d%H%M%S)"
-  cp "$SETTINGS" "$backup"
-  echo "backed up settings to $backup"
+  restore="$(mktemp)"
+  cp "$SETTINGS" "$restore"
 
-  # lens removes its own hooks, so other tools' entries are never touched.
+  # lens removes its own hooks, so other tools' entries are never touched, and
+  # it reports exactly what it changed.
   if [[ -x "$BIN" ]]; then
     "$BIN" hooks remove --settings "$SETTINGS" || {
-      cp "$backup" "$SETTINGS"
+      cp "$restore" "$SETTINGS"
+      rm -f "$restore"
       echo "lens: could not edit the hooks; your settings have been put back" >&2
       exit 1
     }
+    rm -f "$restore"
   else
     echo "lens: $BIN is already gone, so the hooks were left as they are." >&2
     echo "     Remove the lines mentioning 'lens hook' from $SETTINGS by hand." >&2

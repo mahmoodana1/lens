@@ -110,11 +110,27 @@ Or from source:
 ./install.sh
 ```
 
-Either way this puts `lens` in `~/.local/bin` and adds five hooks to
-`~/.claude/settings.json` — backing it up first, and leaving every other tool's
-hooks alone. Restart Claude Code to load them. The panel then appears on its
+Either way, restart Claude Code to load the hooks and the panel appears on its
 own. Run it again to upgrade: lens replaces its own hook entries rather than
 stacking up new ones.
+
+## What it changes on your machine
+
+Three paths, and it says so on the way in rather than leaving you to find out:
+
+| | |
+|---|---|
+| `~/.local/bin/lens` | the binary |
+| `~/.claude/settings.json` | five hooks added. Other tools' hooks and your own settings in that file are left exactly as they were, and a copy of the file as it was is kept beside it as `settings.json.lens-backup` |
+| `~/.local/state/lens/` | what Claude changed and the prompts that caused it, so the panel can show them. Swept 24 hours after a session stops changing. `$XDG_STATE_HOME` is honoured |
+
+Nothing else is touched. Your code is only ever read, never written — `dd`
+clears a row out of the panel and leaves the file alone. Nothing hidden is
+recorded at all: if any part of a path starts with a dot, it never reaches the
+log or the screen, so `.git`, `.env`, `.ssh` and an agent's own state are out by
+construction rather than by a list of names. lens makes no network connections —
+there is no networking code in it. `./uninstall.sh` puts all of it back, and
+tells you where the capture logs are so you can decide about those yourself.
 
 If nothing seems to happen, ask:
 

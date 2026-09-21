@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -321,10 +322,38 @@ func runHooks(args []string) error {
 
 	switch verb {
 	case "install":
+		// Whether a copy was kept depends on there having been something to
+		// copy, and that has to be asked before the file is rewritten.
+		_, err := os.Stat(*settings)
+		existed := err == nil
+
 		if err := hooks.Install(*settings, *binary); err != nil {
 			return err
 		}
-		fmt.Printf("lens: %d hooks installed in %s\n", len(hooks.Events()), *settings)
+
+		// This edits a file the reader owns, full of other tools' settings, and
+		// then starts recording their work. Both deserve saying out loud rather
+		// than a count and a path.
+		fmt.Println("lens: wired into Claude Code.")
+		fmt.Println()
+		fmt.Printf("  changed  %s\n", *settings)
+		fmt.Printf("           %d hooks added: %s\n", len(hooks.Events()), strings.Join(hooks.Events(), ", "))
+		fmt.Printf("           each one runs %s\n", *binary)
+		fmt.Printf("           everything else in that file was left as it was\n")
+		if existed {
+			fmt.Printf("  kept     %s\n", hooks.BackupPath(*settings))
+			fmt.Printf("           that file exactly as it was a moment ago\n")
+		}
+		fmt.Println()
+		fmt.Printf("  writes   %s\n", store.Root())
+		fmt.Printf("           the changes Claude makes, and the prompts that caused them,\n")
+		fmt.Printf("           swept 24 hours after a session stops changing\n")
+		fmt.Println()
+		fmt.Println("  Nothing else on this machine is touched. Your code is only read,")
+		fmt.Println("  never written, and nothing hidden — anything under a dot — is")
+		fmt.Println("  recorded at all. lens makes no network connections.")
+		fmt.Println()
+		fmt.Println("Restart Claude Code to load the hooks.")
 		return nil
 	case "remove":
 		n, err := hooks.Remove(*settings)
@@ -335,7 +364,13 @@ func runHooks(args []string) error {
 			fmt.Println("lens: no lens hooks were installed")
 			return nil
 		}
-		fmt.Printf("lens: %d hooks removed from %s\n", n, *settings)
+		fmt.Println("lens: removed from Claude Code.")
+		fmt.Println()
+		fmt.Printf("  changed  %s\n", *settings)
+		fmt.Printf("           %d hooks removed; everything else left as it was\n", n)
+		fmt.Printf("  kept     %s\n", hooks.BackupPath(*settings))
+		fmt.Printf("  kept     %s\n", store.Root())
+		fmt.Printf("           what was captured is yours; delete it with rm -rf\n")
 		return nil
 	default:
 		return errors.New("usage: lens hooks install|remove [--settings FILE]")

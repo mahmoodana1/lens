@@ -182,6 +182,26 @@ else
   bad "no copy of the original settings was kept" "expected $SETTINGS.lens-backup"
 fi
 
+# The installer's own account of what it did. A reader who is about to let a
+# tool edit their Claude Code settings should be told the three paths it
+# touches, without having to read the source.
+head2 "2b. says what it changed"
+says "it names the settings file it edited"  "$out" "$SETTINGS"
+says "it names the hooks it added"           "$out" "PostToolUse"
+says "it names the binary they run"          "$out" "$BIN"
+says "it says the rest of the file was left alone" "$out" "left as it was"
+says "it names where captured changes go"    "$out" "$STATE"
+says "it says your code is only read"        "$out" "never written"
+says "it says nothing is sent anywhere"      "$out" "no network connections"
+if [[ "$mode" == source ]]; then
+  says "and the installer said so before it wrote anything" "$out" "changes three things on this machine"
+fi
+
+# One copy, not a dated pile: ~/.claude should not silently fill up with
+# settings.json.bak-20260101120000 every time a reader upgrades.
+strays=$(find "$HOME/.claude" -name 'settings.json.bak-*' | wc -l)
+want "no dated backup files were left in ~/.claude" "$strays" "0"
+
 # ── 3. running it again is an upgrade, not a second copy ─────────────────────
 head2 "3. installing again upgrades rather than duplicating"
 if [[ "$mode" == source ]]; then
