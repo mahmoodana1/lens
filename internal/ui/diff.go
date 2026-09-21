@@ -324,13 +324,33 @@ func (h *highlighter) render(s string) string {
 	}
 	var b strings.Builder
 	for _, tok := range it.Tokens() {
-		if st, ok := entryStyle(h.style.Get(tok.Type)); ok {
-			b.WriteString(st.Render(tok.Value))
-			continue
+		// One line in, one line out. Chroma's Makefile lexer hands its recipe
+		// lines to a bash lexer, which returns them with a trailing newline and
+		// padding; a diff row carrying one becomes two rows on screen, and the
+		// wash behind a changed line floods across the break into the next.
+		value, broke := untilLineBreak(tok.Value)
+		if value != "" {
+			if st, ok := entryStyle(h.style.Get(tok.Type)); ok {
+				b.WriteString(st.Render(value))
+			} else {
+				b.WriteString(value)
+			}
 		}
-		b.WriteString(tok.Value)
+		if broke {
+			break
+		}
 	}
 	return b.String()
+}
+
+// untilLineBreak is the text up to the first line break, and whether it found
+// one. A lexer given a single line should return a single line; anything past a
+// break it introduced is its own bookkeeping, not code to show.
+func untilLineBreak(s string) (string, bool) {
+	if i := strings.IndexAny(s, "\n\r"); i >= 0 {
+		return s[:i], true
+	}
+	return s, false
 }
 
 func tail(s []string, n int) []string {

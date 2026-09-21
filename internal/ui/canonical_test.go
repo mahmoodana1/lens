@@ -226,3 +226,18 @@ func TestView_ADeletedFileSaysSo(t *testing.T) {
 		t.Errorf("nothing says the file was deleted:\n%s", out)
 	}
 }
+
+func makefileSession() store.Session {
+	return store.Session{
+		Meta: store.Meta{CWD: "/p"},
+		Events: []capture.Event{{
+			Seq: 1, Rel: "Makefile", Path: "/p/Makefile", Tool: "Edit", Added: 5, Removed: 1,
+			Hunks: []capture.Hunk{{OldStart: 8, OldLines: 7, NewStart: 8, NewLines: 11, Lines: []string{
+				" \tmkdir -p build", " ", "-test: test-init test-add test-commit",
+				"+test:", "+\t-$(MAKE) test-init", "+\t-$(MAKE) test-add",
+				"+\t-$(MAKE) test-commit", "+\t-$(MAKE) test-branch", " ", " test-init:",
+			}}},
+		}},
+		Prompts: map[string]string{},
+	}
+}
