@@ -69,3 +69,28 @@ jobs:
       - name: report skips
         if: always()
         run: go test ./... -v 2>&1 | grep -c -- '--- SKIP' || true
+
+  # The unit tests cover the parts; this covers what a friend actually does:
+  # clone it, run the installer, and expect a panel. The runner is a machine
+  # that has never seen lens, which is the one thing a developer's own machine
+  # can never be.
+  fresh-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
+      # Both paths a reader can take: ./install.sh with a Go toolchain, and a
+      # prebuilt binary wiring itself in. Each one gets a HOME of its own with
+      # no ~/.claude, no settings and no capture logs.
+      - name: a fresh install works
+        run: ./test/fresh-install.sh --local

@@ -260,5 +260,30 @@ Storage is per-session and ephemeral. Closing the popup leaves the log alone so
 you can reopen it, and `SessionEnd` only marks the session finished — the panel
 stays readable afterwards. Logs are swept 24 hours after their last change.
 
+## Testing a fresh install
+
+The unit tests cover the parts. What they cannot cover is the thing most likely
+to go wrong for somebody else: a machine that has never seen lens, has no
+`~/.claude`, no hooks, no capture logs, and possibly no Go.
+
+```sh
+./test/fresh-install.sh           # in throwaway containers
+./test/fresh-install.sh --local   # no docker: a throwaway HOME on this machine
+./test/fresh-install.sh --release # also check the published release assets
+```
+
+It installs both documented ways — `./install.sh` on a machine with Go, and a
+prebuilt binary wiring itself in on a machine without — then fires the real
+hook payloads Claude Code sends, draws the panel in a real tmux and reads the
+screen back, and uninstalls. Along the way it checks that installing twice
+upgrades rather than duplicating, that another tool's hooks and settings survive
+both, that nothing hidden reaches the log or the screen, and that the doctor
+fails only on what actually stops the panel working. Your own install is never
+involved: the repo is mounted read-only, HOME is a temporary directory, and tmux
+gets a server on its own socket rather than the one you are sitting in.
+
+The same checks run on every push, where the runner is genuinely a machine that
+has never seen lens.
+
 See `docs/superpowers/specs/` for the design and `docs/superpowers/plans/` for
 the implementation plan.

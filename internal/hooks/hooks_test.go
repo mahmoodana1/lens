@@ -290,3 +290,91 @@ func TestStatus_WithNoSettingsFile(t *testing.T) {
 		}
 	}
 }
+
+// The README tells a reader to install with `lens hooks install`, which edits a
+// file full of settings lens does not own. Editing it without keeping a copy
+// means a bug here loses somebody else's configuration, so the file as it was
+// found is set aside first.
+func TestInstall_KeepsACopyOfWhatItFound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	before := `{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"other-tool"}]}]}}`
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := hooks.Install(path, "/x/lens"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(hooks.BackupPath(path))
+	if err != nil {
+		t.Fatalf("no backup was kept: %v", err)
+	}
+	if string(got) != before {
+		t.Errorf("the backup is not what was there before:\n got: %s\nwant: %s", got, before)
+	}
+}
+
+// Taking the hooks out rewrites the same file, so it deserves the same care.
+func TestRemove_KeepsACopyOfWhatItFound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := hooks.Install(path, "/x/lens"); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := hooks.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(hooks.BackupPath(path))
+	if err != nil {
+		t.Fatalf("no backup was kept: %v", err)
+	}
+	if string(got) != string(installed) {
+		t.Error("the backup is not the file as it was before the removal")
+	}
+}
+
+// A first install has nothing to copy, and that is not a failure.
+func TestInstall_WithNoSettingsFileYet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+
+	if err := hooks.Install(path, "/x/lens"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(hooks.BackupPath(path)); err == nil {
+		t.Error("a backup was written for a file that did not exist")
+	}
+}
+
+// One copy, not a drawer full: installing repeatedly is how an upgrade works,
+// and each one should leave the state just before it rather than a pile.
+func TestInstall_KeepsOneBackupNotMany(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"model":"one"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := hooks.Install(path, "/x/lens"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("want the settings and one backup, got %v", names)
+	}
+}

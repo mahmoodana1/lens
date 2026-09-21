@@ -164,7 +164,36 @@ func load(path string) (map[string]any, error) {
 
 // save writes the settings out through a temporary file, so an interrupted
 // write cannot leave the owner without a settings file at all.
+// BackupPath is where the settings file as it was found is kept.
+//
+// One copy, overwritten: installing again is how an upgrade works, so a
+// timestamped name would leave a drawer full of near-identical files. What a
+// reader wants is the file as it was just before lens last touched it.
+func BackupPath(path string) string { return path + ".lens-backup" }
+
+// backup sets aside the file about to be rewritten. This file is full of
+// settings lens does not own — another tool's hooks, the reader's own model
+// choice — so a bug in the merging below should be recoverable rather than
+// final. Nothing there yet is nothing to keep, which is not an error.
+func backup(path string) error {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("hooks: reading %s: %w", path, err)
+	}
+	if err := os.WriteFile(BackupPath(path), b, 0o600); err != nil {
+		return fmt.Errorf("hooks: keeping a copy of %s: %w", path, err)
+	}
+	return nil
+}
+
 func save(path string, settings map[string]any) error {
+	if err := backup(path); err != nil {
+		return err
+	}
+
 	b, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("hooks: %w", err)
