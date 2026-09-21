@@ -30,6 +30,18 @@ ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; shift; for l in "$@"; do printf '        %s\n' "$l"; done; fail=$((fail + 1)); }
 head2() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+tally() { printf '\n\033[1m%s: %d passed, %d failed\033[0m\n' "$mode" "$pass" "$fail"; }
+
+# stop is for a failure that makes every later check meaningless. Reporting
+# those anyway buries the one thing that went wrong, and any that happen to
+# pass without the binary even existing pass for no reason at all.
+stop() {
+  printf '  \033[31m----\033[0m  giving up here: %s\n' "$1"
+  printf '        every later check needs a working install, so none were run.\n'
+  tally
+  exit 1
+}
+
 # want compares a value against what it should be, and shows both when it is not.
 want() {
   local desc=$1 got=$2 expect=$3
@@ -145,7 +157,13 @@ else
   out=$("$BIN" hooks install --settings "$SETTINGS" 2>&1); rc=$?
 fi
 [[ $rc -eq 0 ]] && ok "the install succeeds" || bad "the install failed (exit $rc)" "$out"
-[[ -x "$BIN" ]] && ok "$BIN is there and executable" || bad "$BIN is missing"
+if [[ -x "$BIN" ]]; then
+  ok "$BIN is there and executable"
+else
+  bad "$BIN is missing"
+  stop "the install produced no usable binary"
+fi
+"$BIN" --version >/dev/null 2>&1 || stop "$BIN will not run on this machine"
 
 want "all five hooks are wired" "$(lens_hooks "$SETTINGS")" "5"
 want "they run the lens that was just installed" "$(lens_binaries "$SETTINGS")" "$BIN"
@@ -330,5 +348,5 @@ want "the other tool's hook is still there" "$(json_has "$SETTINGS" "$foreign")"
 [[ -f "$log" ]] && ok "the capture logs were kept, as it promises" || bad "uninstall deleted the capture logs"
 
 # ── the tally ───────────────────────────────────────────────────────────────
-printf '\n\033[1m%s: %d passed, %d failed\033[0m\n' "$mode" "$pass" "$fail"
+tally
 [[ $fail -eq 0 ]]

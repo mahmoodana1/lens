@@ -117,17 +117,19 @@ say "building the clean machines"
 docker build -q -t lens-fresh:source - >/dev/null <<'DOCKER' || exit 1
 FROM golang:1.25
 RUN apt-get update && apt-get install -y --no-install-recommends tmux python3 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /home/tester && chmod 1777 /home/tester
 DOCKER
 docker build -q -t lens-fresh:binary - >/dev/null <<'DOCKER' || exit 1
 FROM debian:stable-slim
 RUN apt-get update && apt-get install -y --no-install-recommends tmux python3 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /home/tester && chmod 1777 /home/tester
 DOCKER
 note "source: golang:1.25 + tmux      (has a Go toolchain)"
 note "binary: debian:stable-slim + tmux (no Go at all)"
 
-mounts=(-v "$repo:/repo:ro" -v "$art:/artifacts:ro")
+mounts=(-v "$repo:/repo:ro" -v "$art:/artifacts:ro" --user "$(id -u):$(id -g)")
 goenv=()
 if [[ "$online" == no ]]; then
   # Build from this machine's module cache, read-only, so the test does not

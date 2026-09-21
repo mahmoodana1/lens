@@ -52,7 +52,11 @@ have tmux || die "needs tmux: the panel is a tmux popup over your session." \
 
 echo "building $BIN"
 mkdir -p "$(dirname "$BIN")"
-(cd "$here" && go build -o "$BIN" .)
+# -buildvcs=false: the stamped commit is never read back, and asking git for it
+# fails outright on a clone owned by another user — a repo cloned as root, a
+# shared machine, a mounted volume in a container. That would stop the build
+# with "error obtaining VCS status" and nothing lost by skipping it.
+(cd "$here" && go build -buildvcs=false -o "$BIN" .)
 
 if [[ ! -f "$SETTINGS" ]]; then
   echo '{}' >"$SETTINGS"
