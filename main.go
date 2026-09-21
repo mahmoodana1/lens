@@ -7,7 +7,8 @@
 // As a panel it displays them, in a tmux popup over the session:
 //
 //	lens [--session ID]   the panel itself, as the popup runs it
-//	lens popup            open that popup over the current tmux pane
+//	lens popup            open that popup over the current tmux pane, for
+//	                      the project that pane is working in
 //	lens auto [on|off]    whether the popup opens by itself, for this project
 package main
 
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mahmood/lens/internal/editor"
 	"github.com/mahmood/lens/internal/hook"
 	"github.com/mahmood/lens/internal/pane"
 	"github.com/mahmood/lens/internal/store"
@@ -56,7 +58,8 @@ func main() {
 	}
 
 	fs := flag.NewFlagSet("lens", flag.ContinueOnError)
-	session := fs.String("session", "", "session to show (default: the most recent)")
+	session := fs.String("session", "", "session to show (default: this project's)")
+	project := fs.String("project", "", "project to show a session for (default: the working directory)")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
@@ -69,7 +72,7 @@ func main() {
 	// Sessions whose panel was never opened would otherwise linger.
 	store.Sweep(24 * time.Hour)
 
-	id, err := resolveSession(*session)
+	id, err := resolveSession(*session, *project)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lens:", err)
 		os.Exit(1)
@@ -80,6 +83,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "lens:", err)
 		os.Exit(1)
 	}
+
+	// Opening a change where it lives is the panel's one reach outside itself.
+	sessionProject := m.Project()
+	m.OnOpen(func(file string, line int) {
+		err := editor.Show(editor.Request{
+			Project: sessionProject, File: file, Line: line,
+			Sockets: editor.Sockets(),
+			Find:    pane.EditorPane,
+			Reveal:  pane.Reveal,
+			Start:   pane.NewWindow,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "lens:", err)
+		}
+	})
 
 	// The panel lives in a tmux popup, which is already its own screen.
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -187,11 +205,12 @@ func parseAutoArgs(args []string) (action, dir string, err error) {
 // runPopup opens the panel for a session in a tmux popup and returns.
 func runPopup(args []string) error {
 	fs := flag.NewFlagSet("lens popup", flag.ContinueOnError)
-	session := fs.String("session", "", "session to show (default: the most recent)")
+	session := fs.String("session", "", "session to show (default: this project's)")
+	project := fs.String("project", "", "project to show a session for (default: the pane's directory)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	id, err := resolveSession(*session)
+	id, err := resolveSession(*session, *project)
 	if err != nil {
 		return err
 	}
@@ -202,17 +221,41 @@ func runPopup(args []string) error {
 	return pane.Open(id, self)
 }
 
-// resolveSession falls back to whatever Claude touched last, so `lens` in a
-// bare terminal attaches to the session in front of you.
-func resolveSession(id string) (string, error) {
+// resolveSession picks the session to show: the one named, or the one belonging
+// to the project the panel was asked for.
+//
+// The project matters because every session's directory is touched as its panel
+// is read, so "the most recent session" is often whichever one was last looked
+// at rather than the one in front of you. A panel opened over a project has to
+// be that project's.
+func resolveSession(id, project string) (string, error) {
 	if id != "" {
 		return id, nil
 	}
-	latest, err := latestSession()
+	latest, err := store.Latest(projectOrHere(project))
 	if err != nil || latest == "" {
 		return "", errors.New("no active session. It opens by itself when Claude edits a file.")
 	}
 	return latest, nil
+}
+
+// projectOrHere works out which project was meant: the one asked for, else the
+// directory of the pane the popup covers, else the working directory.
+//
+// The pane comes before the working directory because a tmux key binding is run
+// by the server: its command inherits the server's directory, not the reader's,
+// so `lens popup` from a binding has no other way to know where it was pressed.
+func projectOrHere(project string) string {
+	if project != "" {
+		return store.ProjectKey(project)
+	}
+	if path := pane.CurrentPath(); path != "" {
+		return store.ProjectKey(path)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return store.ProjectKey(cwd)
+	}
+	return ""
 }
 
 func runHook(name string) {
@@ -235,28 +278,4 @@ func runHook(name string) {
 	if err != nil {
 		hook.Debugf("%s: %v", name, err)
 	}
-}
-
-// latestSession finds the most recently touched session, so `lens` in a bare
-// terminal attaches to whatever Claude is doing now.
-func latestSession() (string, error) {
-	entries, err := os.ReadDir(store.Root())
-	if err != nil {
-		return "", err
-	}
-	var best string
-	var bestTime time.Time
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(bestTime) {
-			bestTime, best = info.ModTime(), e.Name()
-		}
-	}
-	return best, nil
 }

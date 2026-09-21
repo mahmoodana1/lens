@@ -70,7 +70,7 @@ func bashChanges(env envelope) error {
 		// A session started outside a project finds it through the paths the
 		// command names — that is how a just-created project gets watched. The
 		// project still bounds it, so a command naming /tmp acquires nothing.
-		ix.SeedFromCommand(env.ToolInput.Command)
+		ix.SeedFromCommand(env.CWD, env.ToolInput.Command)
 		changes = ix.Rescan(since)
 		return nil
 	})

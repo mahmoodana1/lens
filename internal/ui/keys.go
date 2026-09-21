@@ -46,7 +46,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "q", "ctrl+c":
+		m.quitting = true
 		return m, tea.Quit
+	case "o":
+		// Reading a change and then going to find it by hand is the gap this
+		// closes. The popup owns the keyboard, so it stands aside as it goes.
+		if file, line := m.OpenAt(); file != "" && m.onOpen != nil {
+			m.onOpen(file, line)
+			m.quitting = true
+			return m, tea.Quit
+		}
 	case "?":
 		m.showHelp = !m.showHelp
 	case "g", "d":

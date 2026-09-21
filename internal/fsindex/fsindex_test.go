@@ -1,6 +1,7 @@
 package fsindex_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,7 +213,7 @@ func TestSeedRootsFromCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := "mkdir -p " + proj + "/src && cat > " + proj + "/CMakeLists.txt <<'EOF'\nproject(x)\nEOF"
-	ix.SeedFromCommand(cmd)
+	ix.SeedFromCommand(root, cmd)
 
 	found := false
 	for _, r := range ix.Roots() {
@@ -390,5 +391,230 @@ func TestConfine_PrunesRootsAlreadySaved(t *testing.T) {
 	write(t, filepath.Join(elsewhere, "noise.txt"), "more churn\n")
 	if got := ix.Rescan(time.Time{}); len(got) != 0 {
 		t.Errorf("reported %v from outside the project", got)
+	}
+}
+
+// A file Claude removes is exactly the change you would most want to catch, so
+// it is reported like any other — with the contents it had, from the blob the
+// index already kept.
+func TestRescan_ReportsDeletions(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "gone.go"), "package main\n\nfunc main() {}\n")
+	write(t, filepath.Join(root, "stays.go"), "package main\n")
+
+	ix := open(t, root)
+	if err := os.Remove(filepath.Join(root, "gone.go")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := ix.Rescan(time.Time{})
+
+	if len(got) != 1 {
+		t.Fatalf("changes = %+v, want the one deletion", got)
+	}
+	if got[0].Kind != "delete" {
+		t.Errorf("kind = %q, want delete", got[0].Kind)
+	}
+	if filepath.Base(got[0].Path) != "gone.go" {
+		t.Errorf("path = %q, want gone.go", got[0].Path)
+	}
+	if got[0].Old != "package main\n\nfunc main() {}\n" {
+		t.Errorf("old = %q, want what the file held", got[0].Old)
+	}
+	if got[0].New != "" {
+		t.Errorf("new = %q, want empty: the file is gone", got[0].New)
+	}
+}
+
+// Reported once, not on every scan thereafter.
+func TestRescan_ReportsADeletionOnlyOnce(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "gone.go"), "package main\n")
+
+	ix := open(t, root)
+	os.Remove(filepath.Join(root, "gone.go"))
+
+	if got := ix.Rescan(time.Time{}); len(got) != 1 {
+		t.Fatalf("changes = %+v, want one", got)
+	}
+	if got := ix.Rescan(time.Time{}); len(got) != 0 {
+		t.Errorf("changes = %+v, want none the second time", got)
+	}
+}
+
+// A file the walk simply did not reach this time — the budget ran out, a root
+// went away — is still on disk, and must not be mourned as deleted.
+func TestRescan_DoesNotMournAFileThatIsStillThere(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	write(t, filepath.Join(sub, "kept.go"), "package main\n")
+
+	ix, err := fsindex.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.AddRoot(sub)
+	ix.Rescan(time.Time{}) // baseline: kept.go is known
+
+	// The root goes away, so the file is never visited again — but it exists.
+	ix.Confine(filepath.Join(root, "elsewhere"))
+
+	if got := ix.Rescan(time.Time{}); len(got) != 0 {
+		t.Errorf("changes = %+v, want none: the file is still on disk", got)
+	}
+}
+
+// A deletion the reader never saw the contents of is still worth reporting.
+func TestRescan_ReportsADeletionWithNoBlob(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "gone.go"), "package main\n")
+
+	ix := open(t, root)
+	os.RemoveAll(filepath.Join(root, "gone.go"))
+
+	got := ix.Rescan(time.Time{})
+	if len(got) != 1 || got[0].Kind != "delete" {
+		t.Fatalf("changes = %+v, want the deletion", got)
+	}
+}
+
+// A hidden directory is machinery whether it is walked into or handed over as
+// a root. A command naming ~/.config once cost a session 13,000 indexed files
+// and every change it was supposed to be watching.
+func TestConfine_RefusesHiddenRoots(t *testing.T) {
+	proj := t.TempDir()
+	write(t, filepath.Join(proj, "main.go"), "package main\n")
+	write(t, filepath.Join(proj, ".config", "nvim", "init.lua"), "-- x\n")
+
+	ix, err := fsindex.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Confine(proj)
+	ix.AddRoot(proj)
+	ix.AddRoot(filepath.Join(proj, ".config")) // as a command naming it would
+	ix.Rescan(time.Time{})
+
+	for _, r := range ix.Roots() {
+		if filepath.Base(r) == ".config" {
+			t.Errorf("roots include %q, a hidden directory", r)
+		}
+	}
+
+	write(t, filepath.Join(proj, ".config", "nvim", "init.lua"), "-- changed\n")
+	write(t, filepath.Join(proj, "main.go"), "package main // touched\n")
+
+	var got []string
+	for _, c := range ix.Rescan(time.Time{}) {
+		got = append(got, filepath.Base(c.Path))
+	}
+	if len(got) != 1 || got[0] != "main.go" {
+		t.Errorf("reported %v, want only main.go", got)
+	}
+}
+
+// A project that itself lives under a hidden directory is still its own root.
+func TestConfine_AProjectInAHiddenDirectoryIsStillWatched(t *testing.T) {
+	base := t.TempDir()
+	proj := filepath.Join(base, ".config", "nvim")
+	write(t, filepath.Join(proj, "init.lua"), "-- x\n")
+
+	ix, err := fsindex.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Confine(proj)
+	ix.AddRoot(proj)
+	ix.Rescan(time.Time{})
+
+	write(t, filepath.Join(proj, "init.lua"), "-- changed\n")
+	if got := ix.Rescan(time.Time{}); len(got) != 1 {
+		t.Errorf("changes = %+v, want the edit: the project is not hidden from itself", got)
+	}
+}
+
+// A command's paths are relative to where the command ran, not to wherever
+// lens happens to be. An agent working in a subdirectory writes "lib/x.sh",
+// and that is a file in its directory, not in the session's.
+func TestSeedFromCommand_ResolvesAgainstTheCommandsDirectory(t *testing.T) {
+	proj := t.TempDir()
+	sub := filepath.Join(proj, "bashkit")
+	write(t, filepath.Join(sub, "lib", "fileutil.sh"), "echo x\n")
+
+	ix, err := fsindex.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Confine(proj)
+	ix.SeedFromCommand(sub, "cat > lib/fileutil.sh <<'EOF'")
+	ix.Rescan(time.Time{})
+
+	write(t, filepath.Join(sub, "lib", "fileutil.sh"), "echo changed\n")
+
+	var got []string
+	for _, c := range ix.Rescan(time.Time{}) {
+		got = append(got, filepath.Base(c.Path))
+	}
+	if len(got) != 1 || got[0] != "fileutil.sh" {
+		t.Errorf("reported %v, want fileutil.sh: the command ran in %s", got, sub)
+	}
+}
+
+// An absolute path in a command still means what it says.
+func TestSeedFromCommand_StillTakesAbsolutePaths(t *testing.T) {
+	proj := t.TempDir()
+	write(t, filepath.Join(proj, "sub", "x.go"), "package x\n")
+
+	ix, err := fsindex.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Confine(proj)
+	ix.SeedFromCommand("/elsewhere", "touch "+filepath.Join(proj, "sub", "x.go"))
+	ix.Rescan(time.Time{})
+
+	write(t, filepath.Join(proj, "sub", "x.go"), "package x // touched\n")
+	if got := ix.Rescan(time.Time{}); len(got) != 1 {
+		t.Errorf("changes = %+v, want the one file", got)
+	}
+}
+
+// An index that adopted a hidden tree before the rule existed still holds it,
+// along with every file it walked there. Confining has to let go of both, or a
+// session stays poisoned for as long as it lives.
+func TestConfine_PrunesHiddenRootsAlreadySaved(t *testing.T) {
+	proj := t.TempDir()
+	write(t, filepath.Join(proj, "main.go"), "package main\n")
+	write(t, filepath.Join(proj, ".config", "nvim", "init.lua"), "-- x\n")
+
+	// Planted as an older lens left it on disk: the project itself was too
+	// broad to watch, so the only root it ever took was the hidden tree a
+	// command named. The current one will not adopt such a root, so the state
+	// has to be written rather than built.
+	dir := t.TempDir()
+	hidden := filepath.Join(proj, ".config")
+	stale := fmt.Sprintf(`{"roots":[%q],"files":{%q:{"mtime":"2020-01-01T00:00:00Z","size":5,"hash":"x"}},"baselined":true}`,
+		hidden, filepath.Join(hidden, "nvim", "init.lua"))
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ix, err := fsindex.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ix.Roots()) != 1 {
+		t.Fatalf("setup: the planted index has roots %v", ix.Roots())
+	}
+	ix.Confine(proj)
+
+	for _, r := range ix.Roots() {
+		if filepath.Base(r) == ".config" {
+			t.Errorf("roots still include %q", r)
+		}
+	}
+	write(t, filepath.Join(proj, ".config", "nvim", "init.lua"), "-- changed\n")
+	if got := ix.Rescan(time.Time{}); len(got) != 0 {
+		t.Errorf("reported %+v from a hidden tree", got)
 	}
 }

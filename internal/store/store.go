@@ -119,13 +119,32 @@ func (s *Store) Dir() string { return s.dir }
 
 // EnsureMeta writes meta.json the first time it is called and leaves it alone
 // afterwards, so the recorded start time and project root stay put.
+// EnsureMeta records what the session is, once.
+//
+// The project is the directory the session started in, so the first answer
+// stands: an agent that changes directory must not take the session with it.
+// A meta that has no project yet is the exception — SessionEnd can write one
+// before anything else has, and a session with no project is invisible to every
+// question asked by project, so the gap is filled the moment a hook knows.
 func (s *Store) EnsureMeta(cwd string) error {
 	path := filepath.Join(s.dir, metaFile)
-	if _, err := os.Stat(path); err == nil {
-		return nil
+
+	var m Meta
+	err := readJSON(path, &m)
+	switch {
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return err
+	case err == nil && m.CWD != "":
+		return nil // already knows where it is
+	case err == nil:
+		m.CWD = cwd
+		if m.Started.IsZero() {
+			m.Started = time.Now()
+		}
+		return writeJSON(path, m)
 	}
-	m := Meta{SessionID: s.id, CWD: cwd, Started: time.Now()}
-	return writeJSON(path, m)
+
+	return writeJSON(path, Meta{SessionID: s.id, CWD: cwd, Started: time.Now()})
 }
 
 // Append adds one edit to the log, assigning its sequence number.
@@ -204,9 +223,9 @@ func (s *Store) MarkEnded() error {
 	if m.SessionID == "" {
 		m.SessionID = s.id
 	}
-	if m.Started.IsZero() {
-		m.Started = time.Now()
-	}
+	// Not when it started: ending says nothing about beginning, and the file
+	// walk uses that time to decide which files predate the session. Left
+	// unknown, EnsureMeta fills it in when a hook that knows runs.
 	return writeJSON(path, m)
 }
 

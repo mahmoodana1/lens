@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -140,4 +141,27 @@ func ttyFromDevNumber(nr int) string {
 	}
 	minor := (nr & 0xff) | ((nr >> 12) & 0xfff00)
 	return fmt.Sprintf("/dev/pts/%d", minor)
+}
+
+// CurrentPath is the working directory of the pane a popup would cover, or ""
+// when there is no pane to ask.
+//
+// It is how `lens popup` knows which project it was asked for. A tmux key
+// binding is run by the server, so it carries the server's directory rather
+// than the reader's, and the session to show has to be chosen by project or it
+// will be whichever one was touched last — another window's, quite possibly.
+func CurrentPath() string {
+	dest, err := target()
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", dest, "#{pane_current_path}").Output()
+	if err != nil {
+		return ""
+	}
+	path := strings.TrimSpace(string(out))
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return path
 }

@@ -53,6 +53,9 @@ type Model struct {
 	ctx        int // how much surrounding context to show
 	focus      focus
 
+	onOpen   func(file string, line int) // where o hands a file to the editor
+	quitting bool                        // the panel has asked to close
+
 	width, height int
 	pending       string // the first key of a chord, waiting for its second
 	filtering     bool   // the filter prompt has the keyboard
@@ -501,14 +504,49 @@ func (m *Model) renderDiff() Rendered {
 	return m.diff
 }
 
+// idleAfter is how long a session has to go quiet before the panel says so.
+// Below it a pause is just Claude thinking, and a note would be noise.
+const idleAfter = 2 * time.Minute
+
+// idleFor is how long it has been since the session last changed anything.
+//
+// It is measured rather than asked, because the SessionEnd hook is not proof:
+// Claude Code fires it when a conversation is cleared or compacted as well as
+// when it really is over, so the flag reads true for sessions still in use. How
+// long the log has been quiet is a thing that can be known.
+func (m *Model) idleFor() time.Duration {
+	last := m.sess.Meta.Started
+	for _, e := range m.sess.Events {
+		if e.Time.After(last) {
+			last = e.Time
+		}
+	}
+	if last.IsZero() {
+		return 0
+	}
+	return time.Since(last)
+}
+
+// shortDuration is a coarse, readable age: minutes, then hours, then days.
+func shortDuration(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
 func (m *Model) statusLine() string {
 	name := "lens"
 	if m.sess.Meta.CWD != "" {
 		name = shortPath(m.sess.Meta.CWD)
 	}
 	state := ""
-	if m.sess.Meta.Ended {
-		state = styDim.Render("  (session ended)")
+	if quiet := m.idleFor(); quiet > idleAfter {
+		state = styDim.Render("  (idle " + shortDuration(quiet) + ")")
 	}
 	if m.panel {
 		return m.panelStatusLine() + state
@@ -637,6 +675,48 @@ func (m *Model) SelectedKind() RowKind {
 		return RowDir
 	}
 	return r.Kind
+}
+
+// Project is the directory the session ran in, which is where its files live.
+func (m *Model) Project() string { return m.sess.Meta.CWD }
+
+// OnOpen sets what happens when the reader asks to open the selected change in
+// their editor. The panel decides which file and line; someone else knows how
+// to show it.
+func (m *Model) OnOpen(fn func(file string, line int)) { m.onOpen = fn }
+
+// Quitting reports whether the panel has asked to close.
+func (m *Model) Quitting() bool { return m.quitting }
+
+// OpenAt is the file and line the reader is looking at: the line under the diff
+// cursor when the diff has it, the hunk when one is selected, and where the
+// file's first change begins otherwise.
+//
+// The path is the absolute one where it is known, since the editor is not
+// working in the panel's directory.
+func (m *Model) OpenAt() (string, int) {
+	r := m.selected()
+	if r == nil || r.Event == nil {
+		return "", 0
+	}
+
+	file := r.Event.Path
+	if file == "" {
+		file = r.Rel
+	}
+
+	if m.focus == focusDiff {
+		if n := m.renderDiff().NumAt(m.diffCursor); n > 0 {
+			return file, n
+		}
+	}
+	if r.Kind == RowHunk && r.Hunk >= 0 && r.Hunk < len(r.Event.Hunks) {
+		return file, r.Event.Hunks[r.Hunk].NewStart
+	}
+	if len(r.Event.Hunks) > 0 {
+		return file, r.Event.Hunks[0].NewStart
+	}
+	return file, 1
 }
 
 // Panel reports whether the diff has the whole popup to itself.

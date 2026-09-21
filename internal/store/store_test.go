@@ -418,3 +418,100 @@ func TestDismissalsDefaultToNone(t *testing.T) {
 		t.Errorf("dismissed = %v, want none", sess.Dismissed)
 	}
 }
+
+// A session whose meta was created before its project was known — SessionEnd
+// firing before anything else wrote one — must have the gap filled the moment
+// a hook does know. Left empty, the session is invisible to every question
+// asked by project, and its panel is never the one that opens.
+func TestEnsureMeta_FillsInAProjectItDidNotHave(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, err := store.Open("late")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkEnded(); err != nil { // writes a meta with no project
+		t.Fatal(err)
+	}
+	if got, _ := s.Read(); got.Meta.CWD != "" {
+		t.Fatalf("setup: cwd = %q, want it missing", got.Meta.CWD)
+	}
+
+	if err := s.EnsureMeta("/home/me/minigit"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Meta.CWD != "/home/me/minigit" {
+		t.Errorf("cwd = %q, want it filled in", got.Meta.CWD)
+	}
+	if !got.Meta.Ended {
+		t.Error("filling in the project forgot that the session had ended")
+	}
+}
+
+// The project is the one the session started in, so the first answer stands:
+// an agent that changes directory must not move the session with it.
+func TestEnsureMeta_KeepsTheProjectItAlreadyHas(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, _ := store.Open("first")
+	if err := s.EnsureMeta("/home/me/proj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureMeta("/home/me/proj/subdir"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Read()
+	if got.Meta.CWD != "/home/me/proj" {
+		t.Errorf("cwd = %q, want the directory it started in", got.Meta.CWD)
+	}
+}
+
+// Ending a session says nothing about when it began, so it must not invent a
+// beginning: the walk uses that time to decide which files predate the session.
+func TestMarkEnded_DoesNotInventAStartTime(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	s, _ := store.Open("noStart")
+	if err := s.MarkEnded(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.Read()
+	if !got.Meta.Started.IsZero() {
+		t.Errorf("started = %v, want it left unknown", got.Meta.Started)
+	}
+}
+
+// A session is found by its project only once its meta names one. Until then
+// another session wins, however stale — which is how a panel came to open on an
+// empty session while the one holding the work sat unmatched beside it.
+func TestLatest_FindsASessionOnceItsProjectIsKnown(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	other, _ := store.Open("other")
+	if err := other.EnsureMeta("/home/me/proj"); err != nil {
+		t.Fatal(err)
+	}
+	other.Append(capture.Event{Rel: "b.go", Added: 1})
+
+	s, _ := store.Open("late")
+	s.MarkEnded() // a meta with no project
+	s.Append(capture.Event{Rel: "a.go", Added: 1})
+
+	if got, _ := store.Latest("/home/me/proj"); got != "other" {
+		t.Fatalf("setup: Latest = %q, want other: late names no project yet", got)
+	}
+
+	if err := s.EnsureMeta("/home/me/proj"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.Latest("/home/me/proj"); got != "late" {
+		t.Errorf("Latest = %q, want late now that its project is known", got)
+	}
+}

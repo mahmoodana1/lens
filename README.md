@@ -16,6 +16,16 @@ each edit, with the hunks it made listed under it, named by line number and the
 first line they changed. Picking a hunk jumps the diff to it, so a file with a
 past can be read one change at a time. `h` or `esc` comes back out.
 
+`o` opens what you are looking at in your editor and stands aside — the hunk
+under the cursor, or the line the diff cursor is on. It hands the file to the
+nvim already working on that project, over the socket nvim leaves behind, and
+asks for `drop`: a file already on screen is jumped to rather than opened twice.
+The editor is usually in another tmux window, so that window is brought forward
+too. With no editor on the project, one is started in a window of its own, working a
+level above the file — near enough that its siblings are to hand, and never at
+`$HOME`, where an editor is rooted at everything. A file whose parent would be
+home settles for its own directory instead.
+
 `dd` clears whatever the cursor is on out of the view — a file, one edit to it,
 or a single hunk — which is how you put down what you have finished reading.
 Nothing on disk is touched; the files and the capture are left exactly as they
@@ -37,14 +47,14 @@ stay bright; once you land on one it dims — and a file lights up again when
 Claude touches it afresh. Read state is kept per session, so closing
 the popup and reopening it does not present everything as new again.
 
-The diff is coloured with the same catppuccin mocha palette as the editor,
+The diff is coloured with the same tokyonight-moon palette as the editor,
 syntax and all, including added and removed lines — what marks those is a wash
 of green or red behind the code rather than flattening it to one colour. The
-colours are not an approximation of the theme: the palette is the flavour's own,
-the token mapping is transcribed from catppuccin's syntax and treesitter
-highlight groups, and the washes are its `DiffAdd`, `DiffDelete` and
-`CursorLine`, mixed into the base by the same formula. Comments, docstrings and
-module names come out italic, as they do in the editor.
+colours are not an approximation of the theme, nor a reading of its source:
+they are the values a running nvim gave when asked what it draws each highlight
+group with, group by group, which is the only account that cannot go stale. The
+washes are its `DiffAdd`, `DiffDelete` and `CursorLine`, taken whole. Comments
+and docstrings come out italic, as they do in the editor.
 
 A file type the highlighter has never heard of used to come out as a wall of
 plain text — `.bats`, `.tmux`, `.conf` and friends have no lexer of their own.
@@ -52,9 +62,10 @@ Those borrow one that reads close enough (a bats file is bash with a test
 harness, a justfile is a makefile), and a file with no useful name at all is
 identified from the code the edit touched, a shebang included.
 
-One thing does not survive the crossing: catppuccin italicises conditionals but
-not other keywords, and the highlighter here has no token that tells `if` from
-`func`, so keywords are left upright rather than italicising all of them. `tab` gives the
+One thing does not survive the crossing: the editor draws `if` and `for` in
+magenta but a bare `defer` or `return` in italic pink, and the highlighter here
+has no token that tells them apart. Keywords take the magenta, which is what
+most of them are. `tab` gives the
 diff a cursor of its own; `ctrl-e`/`ctrl-y` and `ctrl-f`/`ctrl-b` scroll it from
 either pane, so a long hunk never needs a focus change to read.
 
@@ -87,6 +98,12 @@ and the flag may come in either order, and the directory is resolved to an
 absolute, symlink-free path, so a relative `--project .` names the same project
 the hook does.
 
+Both bindings act on the project of the pane you press them in. `lens popup`
+asks tmux what the pane is working in, so the panel that opens is that
+project's session rather than whichever session was written to most recently —
+which, since reading a panel touches its session, is otherwise often another
+window's. `lens [popup] --project DIR` names one explicitly.
+
 Capture keeps running while it is off, so the next `lens popup` still shows
 everything that happened, and turning it back on catches up rather than skipping
 what it missed. Muted projects are listed in
@@ -109,6 +126,7 @@ what it missed. Muted projects are listed in
 | `h` / `esc` | back out a level |
 | `enter` | one level in: the file, then its full-width diff |
 | `f` | the full-width diff from anywhere |
+| `o` | open where you are looking, in nvim |
 | `dd` | clear the file, edit or hunk out of the view |
 | `u` / `ctrl-r` | undo / redo one `dd` |
 | `+` / `-` | more / less surrounding context |
@@ -129,9 +147,15 @@ nothing about what they touched, so those are found by watching the project:
 a stat-walk finds what moved and diffs it. Build output, dependencies, binaries
 and large files are skipped; `$HOME` and `/` are never walked.
 
-The walk never leaves the project. It sweeps whole directories, so a single
-shell command naming a path in `/tmp` used to be enough to adopt it as a root
-and fill the panel with other programs' scratch files — Claude Code's own temp
+The walk never leaves the project, and never enters anything hidden — as a root
+any more than as a directory it descends into. It sweeps whole directories, so a
+single shell command naming `~/.config` was once enough to adopt it wholesale:
+thirteen thousand files indexed, and the project itself never watched. Paths a
+command names are resolved against the directory that command ran in, not
+lens's own, or an agent working in a subdirectory has its files looked for in
+the wrong place. A single shell command naming a path in `/tmp` used to be
+enough to adopt it as a root and fill the panel with other programs' scratch
+files — Claude Code's own temp
 repositories for diffing shell edits, a plugin's preload files. Roots named by a
 command are still picked up, which is how a project created mid-session gets
 watched, but only inside the directory the session started in. An index that

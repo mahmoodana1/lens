@@ -50,8 +50,8 @@ func TestStripBackground_RemovesOnlyBackgrounds(t *testing.T) {
 	}
 }
 
-// The diff wears the same colours as the editor beside it: catppuccin mocha,
-// mapped the way catppuccin's own treesitter groups map them.
+// The diff wears the same colours as the editor beside it. Each of these is a
+// value a running nvim gave when asked what it draws that group with.
 func TestSyntaxStyle_UsesTheEditorPalette(t *testing.T) {
 	st := syntaxStyle()
 
@@ -59,20 +59,21 @@ func TestSyntaxStyle_UsesTheEditorPalette(t *testing.T) {
 		token chroma.TokenType
 		want  string
 	}{
-		{chroma.Keyword, ctpMauve},            // Keyword
-		{chroma.KeywordConstant, ctpPeach},    // Boolean / Constant
-		{chroma.LiteralString, ctpGreen},      // String
-		{chroma.LiteralStringEscape, ctpPink}, // @string.escape
-		{chroma.LiteralNumber, ctpPeach},      // Number
-		{chroma.Comment, ctpOverlay2},         // Comment
-		{chroma.NameFunction, ctpBlue},        // Function
-		{chroma.NameClass, ctpYellow},         // Type / Structure
-		{chroma.NameProperty, ctpLavender},    // @property
-		{chroma.NameBuiltin, ctpPeach},        // @function.builtin
-		{chroma.Operator, ctpSky},             // Operator
-		{chroma.Punctuation, ctpOverlay2},     // Delimiter
-		{chroma.NameLabel, ctpSapphire},       // Label
-		{chroma.Error, ctpRed},                // Error
+		{chroma.Keyword, tnMagenta},             // @keyword.function
+		{chroma.KeywordConstant, tnBlue1},       // @constant.builtin
+		{chroma.KeywordNamespace, tnCyan},       // @keyword.import
+		{chroma.LiteralString, tnGreen},         // String
+		{chroma.LiteralStringEscape, tnMagenta}, // @string.escape
+		{chroma.LiteralNumber, tnOrange},        // Number
+		{chroma.Comment, tnComment},             // Comment
+		{chroma.NameFunction, tnBlue},           // Function
+		{chroma.NameClass, tnBlue1},             // Type
+		{chroma.NameProperty, tnTeal},           // @property
+		{chroma.NameBuiltin, tnBlue1},           // @function.builtin
+		{chroma.NameBuiltinPseudo, tnRed},       // @variable.builtin
+		{chroma.Operator, tnBlue5},              // Operator
+		{chroma.Punctuation, tnFgDark},          // @punctuation.bracket
+		{chroma.Error, tnError},                 // Error
 	} {
 		if got := st.Get(c.token).Colour.String(); !strings.EqualFold(got, c.want) {
 			t.Errorf("%v = %s, want %s", c.token, got, c.want)
@@ -80,7 +81,7 @@ func TestSyntaxStyle_UsesTheEditorPalette(t *testing.T) {
 	}
 }
 
-// Catppuccin italicises comments, and that is half of what makes code look
+// The editor italicises comments, and that is half of what makes code look
 // like code. The style carries it; rendering has to keep it.
 func TestSyntaxStyle_ComentsAreItalic(t *testing.T) {
 	if got := syntaxStyle().Get(chroma.Comment).Italic; got != chroma.Yes {
@@ -99,8 +100,8 @@ func TestEntryStyle_KeepsMoreThanTheColour(t *testing.T) {
 	if !st.GetItalic() {
 		t.Error("the comment's italics were dropped")
 	}
-	if got := st.GetForeground(); got != lipgloss.Color(ctpOverlay2) {
-		t.Errorf("comment colour = %v, want %s", got, ctpOverlay2)
+	if got := st.GetForeground(); got != lipgloss.Color(tnComment) {
+		t.Errorf("comment colour = %v, want %s", got, tnComment)
 	}
 
 	// A token the style says nothing about must be left exactly as it came.
@@ -114,18 +115,16 @@ func TestEntryStyle_KeepsMoreThanTheColour(t *testing.T) {
 	}
 }
 
-// The washes behind changed lines are catppuccin's own DiffAdd and DiffDelete,
-// which are the flavour's green and red mixed 18%% into the base.
-func TestDiffWashes_MatchTheEditor(t *testing.T) {
-	if want := blend(ctpGreen, ctpBase, 0.18); bgAdd != want {
-		t.Errorf("bgAdd = %s, want %s", bgAdd, want)
+// The washes are the editor's own, not something mixed here to look similar.
+func TestDiffWashes_AreTheEditorsOwn(t *testing.T) {
+	if bgAdd != tnDiffAdd {
+		t.Errorf("bgAdd = %s, want DiffAdd %s", bgAdd, tnDiffAdd)
 	}
-	if want := blend(ctpRed, ctpBase, 0.18); bgDel != want {
-		t.Errorf("bgDel = %s, want %s", bgDel, want)
+	if bgDel != tnDiffDelete {
+		t.Errorf("bgDel = %s, want DiffDelete %s", bgDel, tnDiffDelete)
 	}
-	// CursorLine, which catppuccin darkens surface0 towards the base for.
-	if want := blend(ctpSurface0, ctpBase, 0.64); bgCursor != want {
-		t.Errorf("bgCursor = %s, want %s", bgCursor, want)
+	if bgCursor != tnCursorLine {
+		t.Errorf("bgCursor = %s, want CursorLine %s", bgCursor, tnCursorLine)
 	}
 }
 

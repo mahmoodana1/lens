@@ -7,11 +7,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const helpText = "j/k move · l open file · dd hide · u undo · / find · J/K file · tab focus · q quit"
+const helpText = "j/k move · l open file · o edit · dd hide · u undo · / find · tab focus · q quit"
 
-const insideHelpText = "j/k move · enter full diff · h back · dd hide · u undo · n/N hunk · q quit"
+const insideHelpText = "j/k move · enter full diff · o edit · h back · dd hide · n/N hunk · q quit"
 
-const panelHelpText = "j/k line · n/N hunk · J/K file · ctrl-f/b page · esc back · q quit"
+const panelHelpText = "j/k line · n/N hunk · o edit · J/K file · ctrl-f/b page · esc back · q quit"
 
 // View renders the whole panel. It never exceeds the terminal's bounds: the
 // panel shares a window with Claude Code and must not reflow it.
@@ -320,6 +320,7 @@ func (m *Model) helpLines(height int) []string {
 		{"h / esc", "back out a level"},
 		{"enter", "open the file, then its full-width diff panel"},
 		{"f", "the diff panel from anywhere"},
+		{"o", "open where you are looking, in nvim (starts one if none is open)"},
 		{"dd", "clear the file, edit or hunk out of the view"},
 		{"u / ctrl-r", "undo / redo one dd at a time"},
 		{"+ / -", "more / less surrounding context"},

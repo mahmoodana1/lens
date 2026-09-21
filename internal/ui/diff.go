@@ -33,6 +33,10 @@ type Rendered struct {
 	Kinds      []LineKind
 	HunkStarts []int
 	HunkIDs    []int
+	// Nums is the line each rendered line shows in the file, or 0 for the
+	// header, the prompt and removed lines that no longer have one. It is how
+	// "open where I am looking" finds a place to open.
+	Nums []int
 }
 
 // StartOf is the line a hunk of the edit begins on, and whether it is shown.
@@ -45,10 +49,39 @@ func (r Rendered) StartOf(hunk int) (int, bool) {
 	return 0, false
 }
 
-// add appends a line of the given kind.
+// add appends a line of the given kind, showing no line of the file.
 func (r *Rendered) add(kind LineKind, line string) {
+	r.addAt(kind, line, 0)
+}
+
+// addAt appends a line that shows line num of the file.
+func (r *Rendered) addAt(kind LineKind, line string, num int) {
 	r.Lines = append(r.Lines, line)
 	r.Kinds = append(r.Kinds, kind)
+	r.Nums = append(r.Nums, num)
+}
+
+// NumAt is the line of the file shown at a rendered line.
+//
+// Not every rendered line has one: a hunk header, the prompt, a removed line
+// that the file no longer holds. The search runs forward first and only then
+// back, because the lines without a number all sit above the code they belong
+// to — resting on a hunk header means the hunk below, not the one before it.
+func (r Rendered) NumAt(i int) int {
+	if i < 0 || i >= len(r.Nums) {
+		return 0
+	}
+	for j := i; j < len(r.Nums); j++ {
+		if r.Nums[j] > 0 {
+			return r.Nums[j]
+		}
+	}
+	for j := i; j >= 0; j-- {
+		if r.Nums[j] > 0 {
+			return r.Nums[j]
+		}
+	}
+	return 0
 }
 
 // diffBackground picks the wash for a diff line. The cursor band beats the
@@ -85,8 +118,12 @@ func RenderDiffFull(e capture.Event, prompt string, ctx int, width int, hidden H
 	r.add(LinePlain, styHeading.Render(truncateVisible(head, width)))
 
 	sub := fmt.Sprintf("%s · %s", orDash(e.Tool), e.Time.Format("15:04:05"))
-	if e.Kind == "create" {
+	switch e.Kind {
+	case "create":
 		sub = "new file · " + sub
+	case "delete":
+		// Not an edit that happened to remove a lot: the file is gone.
+		sub = "deleted · " + sub
 	}
 	r.add(LinePlain, styDim.Render(truncateVisible(sub, width)))
 
@@ -117,14 +154,14 @@ func renderHunk(r *Rendered, h capture.Hunk, ctx, width int, hl *highlighter) {
 	oldNo := h.OldStart - len(above)
 	newNo := h.NewStart - len(above)
 	for _, ln := range above {
-		r.add(LinePlain, gutterLine(newNo, " ", ln, width, hl))
+		r.addAt(LinePlain, gutterLine(newNo, " ", ln, width, hl), newNo)
 		oldNo++
 		newNo++
 	}
 
 	for _, raw := range h.Lines {
 		if raw == "" {
-			r.add(LinePlain, gutterLine(newNo, " ", "", width, hl))
+			r.addAt(LinePlain, gutterLine(newNo, " ", "", width, hl), newNo)
 			oldNo++
 			newNo++
 			continue
@@ -134,20 +171,20 @@ func renderHunk(r *Rendered, h capture.Hunk, ctx, width int, hl *highlighter) {
 		case "\\":
 			continue // "no newline at end of file" is bookkeeping, not code
 		case "+":
-			r.add(LineAdd, gutterLine(newNo, "+", body, width, hl))
+			r.addAt(LineAdd, gutterLine(newNo, "+", body, width, hl), newNo)
 			newNo++
 		case "-":
 			r.add(LineDel, gutterLine(0, "-", body, width, hl))
 			oldNo++
 		default:
-			r.add(LinePlain, gutterLine(newNo, " ", body, width, hl))
+			r.addAt(LinePlain, gutterLine(newNo, " ", body, width, hl), newNo)
 			oldNo++
 			newNo++
 		}
 	}
 
 	for _, ln := range head(h.Below, ctx) {
-		r.add(LinePlain, gutterLine(newNo, " ", ln, width, hl))
+		r.addAt(LinePlain, gutterLine(newNo, " ", ln, width, hl), newNo)
 		oldNo++
 		newNo++
 	}

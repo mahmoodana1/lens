@@ -206,3 +206,23 @@ func TestCanonical_DeliberateEditsOutsideTheProjectAreKept(t *testing.T) {
 		t.Errorf("showing %q, want /etc/hosts", got)
 	}
 }
+
+// A deletion must not read like an ordinary edit that happened to remove a lot.
+func TestView_ADeletedFileSaysSo(t *testing.T) {
+	m := browsing(store.Session{
+		Meta: store.Meta{CWD: "/p"},
+		Events: []capture.Event{{
+			Seq: 1, Rel: "gone.go", Path: "/p/gone.go", Tool: "Bash", Kind: "delete", Removed: 3,
+			Hunks: []capture.Hunk{{OldStart: 1, OldLines: 3, NewStart: 0, Lines: []string{
+				"-package main", "-", "-func main() {}",
+			}}},
+		}},
+		Prompts: map[string]string{},
+	})
+	m.Resize(100, 16)
+
+	out := ui.StripANSIForTest(m.View())
+	if !strings.Contains(out, "deleted") {
+		t.Errorf("nothing says the file was deleted:\n%s", out)
+	}
+}

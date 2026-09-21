@@ -771,3 +771,126 @@ func TestBash_PrunesRootsAnOlderSessionStrayedTo(t *testing.T) {
 		t.Errorf("recorded %v from a root outside the project", relsOf(sess))
 	}
 }
+
+// A file removed by a shell command is a change worth showing, recorded with
+// the contents it had so the diff says what was lost.
+func TestBash_RecordsADeletedFile(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	root := t.TempDir()
+	doomed := filepath.Join(root, "doomed.go")
+	if err := os.WriteFile(doomed, []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	start := payload(map[string]any{"session_id": "del", "cwd": root, "hook_event_name": "SessionStart"})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(doomed); err != nil {
+		t.Fatal(err)
+	}
+
+	done := payload(map[string]any{
+		"session_id": "del", "cwd": root, "hook_event_name": "PostToolUse",
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "rm doomed.go"},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(done)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("del")
+	sess, _ := s.Read()
+	if len(sess.Events) != 1 {
+		t.Fatalf("events = %v, want the deletion", relsOf(sess))
+	}
+	e := sess.Events[0]
+	if e.Kind != "delete" {
+		t.Errorf("kind = %q, want delete", e.Kind)
+	}
+	if e.Rel != "doomed.go" {
+		t.Errorf("rel = %q, want doomed.go", e.Rel)
+	}
+	if e.Removed != 3 || e.Added != 0 {
+		t.Errorf("counts = +%d -%d, want +0 -3: every line went", e.Added, e.Removed)
+	}
+}
+
+// The situation that captured nothing: a session started in the home directory
+// — too broad to watch, so it is refused as a root — with the agent working in
+// a project below it, writing files by relative path.
+func TestBash_CapturesAProjectBelowAHomeSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home) // home is refused as a root: too broad to walk
+	proj := filepath.Join(home, "bashkit")
+	if err := os.MkdirAll(filepath.Join(proj, "lib"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	start := payload(map[string]any{"session_id": "homesess", "cwd": home, "hook_event_name": "SessionStart"})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+
+	file := filepath.Join(proj, "lib", "fileutil.sh")
+	if err := os.WriteFile(file, []byte("file_ext() { :; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The command ran in the project and named the file the way an agent does.
+	done := payload(map[string]any{
+		"session_id": "homesess", "cwd": proj, "hook_event_name": "PostToolUse",
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "cat > lib/fileutil.sh <<'EOF'"},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(done)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("homesess")
+	sess, _ := s.Read()
+	if len(sess.Events) != 1 {
+		t.Fatalf("events = %v, want the file the command wrote", relsOf(sess))
+	}
+	if got := sess.Events[0].Rel; got != "bashkit/lib/fileutil.sh" {
+		t.Errorf("rel = %q, want bashkit/lib/fileutil.sh", got)
+	}
+}
+
+// A command naming a hidden directory must not hand the walk the whole of it.
+func TestBash_DoesNotAdoptHiddenDirectoriesNamedInCommands(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	isolateFromTmux(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := filepath.Join(home, ".config", "nvim")
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	start := payload(map[string]any{"session_id": "dots", "cwd": home, "hook_event_name": "SessionStart"})
+	if err := hook.SessionStart(bytes.NewReader(start)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "init.lua"), []byte("-- x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	done := payload(map[string]any{
+		"session_id": "dots", "cwd": home, "hook_event_name": "PostToolUse",
+		"tool_name": "Bash", "tool_input": map[string]any{"command": "grep -r colorscheme " + cfg},
+	})
+	if err := hook.PostToolUse(bytes.NewReader(done)); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := store.Open("dots")
+	sess, _ := s.Read()
+	if len(sess.Events) != 0 {
+		t.Errorf("recorded %v from a hidden directory", relsOf(sess))
+	}
+}

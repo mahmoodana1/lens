@@ -33,8 +33,8 @@ func TestTTYFromDevNumber(t *testing.T) {
 		nr   int
 		want string
 	}{
-		{"pts/0", 34816, "/dev/pts/0"},  // major 136, minor 0
-		{"pts/7", 34823, "/dev/pts/7"},  // major 136, minor 7
+		{"pts/0", 34816, "/dev/pts/0"}, // major 136, minor 0
+		{"pts/7", 34823, "/dev/pts/7"}, // major 136, minor 7
 		{"pts/12", 34828, "/dev/pts/12"},
 		{"no controlling terminal", 0, ""},
 	}

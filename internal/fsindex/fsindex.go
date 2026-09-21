@@ -57,7 +57,7 @@ type Meta struct {
 // Change is one observed difference in a file.
 type Change struct {
 	Path string // absolute
-	Kind string // "create" or "update"
+	Kind string // "create", "update" or "delete"
 	Old  string
 	New  string
 }
@@ -143,7 +143,7 @@ func (ix *Index) Confine(project string) {
 
 	kept := ix.roots[:0]
 	for _, r := range ix.roots {
-		if capture.Inside(ix.project, r) {
+		if ix.watched(r) {
 			kept = append(kept, r)
 		}
 	}
@@ -152,10 +152,22 @@ func (ix *Index) Confine(project string) {
 	// The files remembered from those roots would otherwise sit in the index
 	// forever, since nothing will visit them again to retire them.
 	for path := range ix.files {
-		if !capture.Inside(ix.project, path) {
+		if !ix.watched(path) {
 			delete(ix.files, path)
 		}
 	}
+}
+
+// watched reports whether a path is one the walk may touch: inside the project
+// and not hidden.
+//
+// Hidden trees are machinery whether they are walked into or handed over as a
+// root — a command naming ~/.config once cost a session thirteen thousand
+// indexed files and every change it was meant to be watching. Roots are saved
+// between calls, so this decides what an older index keeps as well as what a
+// new one takes on.
+func (ix *Index) watched(path string) bool {
+	return capture.Inside(ix.project, path) && !capture.HiddenPath(ix.project, path)
 }
 
 func (ix *Index) AddRoot(dir string) {
@@ -170,8 +182,8 @@ func (ix *Index) AddRoot(dir string) {
 	if !watchable(abs) {
 		return
 	}
-	if !capture.Inside(ix.project, abs) {
-		return // the walk does not leave the project
+	if !ix.watched(abs) {
+		return
 	}
 	for _, r := range ix.roots {
 		if r == abs || strings.HasPrefix(abs, r+string(filepath.Separator)) {
@@ -212,12 +224,19 @@ func watchable(abs string) bool {
 
 // SeedFromCommand adds roots named by a shell command, which is how a session
 // started outside a project still finds the project it just created.
-func (ix *Index) SeedFromCommand(cmd string) {
+// SeedFromCommand adds roots named by a shell command that ran in dir.
+//
+// The paths are resolved against dir rather than this process's own directory:
+// an agent working in a subdirectory writes "lib/x.sh", and that names a file
+// where the command ran, not where lens happens to be. Resolving it here sent
+// the walk somewhere else entirely, and the project went unwatched.
+func (ix *Index) SeedFromCommand(dir, cmd string) {
 	for _, tok := range pathTokens(cmd) {
-		abs, err := filepath.Abs(tok)
-		if err != nil {
-			continue
+		abs := tok
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(dir, abs)
 		}
+		abs = filepath.Clean(abs)
 		fi, err := os.Stat(abs)
 		if err != nil {
 			// A path that does not exist may be a file about to be written;
@@ -286,15 +305,27 @@ func (ix *Index) Rescan(since time.Time) []Change {
 	}
 	ix.baselined = true
 
-	// Files that vanished simply leave the index; a deletion is not something
-	// to read, and reporting one would only add noise to the panel.
 	for path, meta := range seen {
 		ix.files[path] = meta
 	}
-	for path := range ix.files {
-		if _, ok := seen[path]; !ok {
-			delete(ix.files, path)
+
+	// A file that was known and is now gone is a change in its own right — the
+	// one a reader would most want to catch. Absence from this scan is not
+	// enough to say so: the walk has a budget and roots come and go, so a file
+	// it simply did not reach this time is still there. The disk decides.
+	for path, meta := range ix.files {
+		if _, ok := seen[path]; ok {
+			continue
 		}
+		if _, err := os.Stat(path); err == nil {
+			continue // not visited, but not gone either
+		}
+		delete(ix.files, path) // reported once, then forgotten
+		if first {
+			continue // the baseline reports nothing
+		}
+		old, _ := ix.blob(meta.Hash)
+		changes = append(changes, Change{Path: path, Kind: "delete", Old: old})
 	}
 
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
