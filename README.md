@@ -309,13 +309,17 @@ rather than claiming to be the last tag. A test enforces the suffix, and the
 release workflow refuses to publish a `-dev` build.
 
 1. `./test/fresh-install.sh` — both install paths, on clean machines.
-2. Set `var version` to the release: `0.1.2-dev` → `0.1.2`. Commit.
-3. `git tag v0.1.2 && git push --tags`. The workflow builds four platforms,
-   checks the binary reports `0.1.2`, and publishes them with `SHA256SUMS`.
-4. Bump `var version` to the next `-dev` (`0.1.3-dev`) and commit, so master is
-   never mistaken for a release.
-5. `./test/fresh-install.sh --release` — the published assets, as a friend
+2. `git tag v0.1.2 && git push --tags`. The tag is what carries the version:
+   the workflow stamps it in with `-X`, checks the binary reports `0.1.2` and
+   is not a `-dev` build, and publishes four platforms with `SHA256SUMS`.
+3. Bump `var version` to the next `-dev` (`0.1.3-dev`) and commit, so master
+   names the release it is heading for rather than the one just cut.
+4. `./test/fresh-install.sh --release` — the published assets, as a friend
    downloads them.
+
+Master is never committed at a release version. Doing so would leave the
+tagged commit failing its own `-dev` test, and it is not needed: nothing reads
+that value in a release build.
 
 See `docs/superpowers/specs/` for the design and `docs/superpowers/plans/` for
 the implementation plan.
