@@ -39,6 +39,24 @@ jobs:
           (cd dist && sha256sum lens_* > SHA256SUMS)
           ls -l dist
 
+      # The version is injected with -X, which fails quietly: a const instead of
+      # a var, a renamed symbol, a moved package, and the build still succeeds —
+      # shipping a release that introduces itself as 0.1.2-dev. Ask the binary
+      # what it is before handing it to anybody.
+      - name: the binary knows what version it is
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          got="$(./dist/lens_linux_amd64 --version)"
+          echo "$got"
+          case "$got" in
+            *-dev*) echo "refusing to publish a -dev build as $TAG" >&2; exit 1 ;;
+          esac
+          case "$got" in
+            *"${TAG#v}"*) echo "the stamp took" ;;
+            *) echo "the binary says '$got', not ${TAG#v}: the -X stamp did not take" >&2; exit 1 ;;
+          esac
+
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}

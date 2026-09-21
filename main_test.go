@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +72,18 @@ func TestParseAutoArgs_ResolvesTheProjectItReports(t *testing.T) {
 	}
 	if want, _ := filepath.EvalSymlinks(dir); got != want {
 		t.Errorf("project = %q, want %q", got, want)
+	}
+}
+
+// Master always carries a -dev version.
+//
+// Releases replace it with the tag via -X main.version, so the value written
+// here is what every source install reports. Left at a released number it
+// quietly claims to be that release, however far master has moved since — and
+// the first thing a bug report needs is which build it came from. Bumping it to
+// the next -dev is part of cutting a release; this is what remembers.
+func TestVersion_OnMasterIsADevelopmentBuild(t *testing.T) {
+	if !strings.HasSuffix(version, "-dev") {
+		t.Errorf("version = %q; master should name the release being worked towards, as 0.1.2-dev", version)
 	}
 }

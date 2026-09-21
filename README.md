@@ -285,5 +285,21 @@ gets a server on its own socket rather than the one you are sitting in.
 The same checks run on every push, where the runner is genuinely a machine that
 has never seen lens.
 
+## Releasing
+
+`var version` in `main.go` carries a `-dev` suffix on master and names the
+release being worked towards, so a source install reports what it actually is
+rather than claiming to be the last tag. A test enforces the suffix, and the
+release workflow refuses to publish a `-dev` build.
+
+1. `./test/fresh-install.sh` — both install paths, on clean machines.
+2. Set `var version` to the release: `0.1.2-dev` → `0.1.2`. Commit.
+3. `git tag v0.1.2 && git push --tags`. The workflow builds four platforms,
+   checks the binary reports `0.1.2`, and publishes them with `SHA256SUMS`.
+4. Bump `var version` to the next `-dev` (`0.1.3-dev`) and commit, so master is
+   never mistaken for a release.
+5. `./test/fresh-install.sh --release` — the published assets, as a friend
+   downloads them.
+
 See `docs/superpowers/specs/` for the design and `docs/superpowers/plans/` for
 the implementation plan.

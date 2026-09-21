@@ -34,7 +34,13 @@ import (
 )
 
 // version is the build, overridden at release time with -X main.version.
-var version = "0.1.0"
+//
+// On master it always carries a -dev suffix, and names the release being worked
+// towards rather than the last one published. A source install then says so
+// plainly instead of claiming to be a release it is months ahead of — which is
+// what a bug report needs. The release workflow replaces it with the tag and
+// checks that it took.
+var version = "0.1.2-dev"
 
 func main() {
 	// Hooks run on every edit of every session. They must never take a session
