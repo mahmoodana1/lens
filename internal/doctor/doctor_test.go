@@ -241,3 +241,24 @@ func TestRun_EveryCheckSaysSomething(t *testing.T) {
 		}
 	}
 }
+
+// The exit status is for scripts, and a warning is not a failure: the panel
+// works with a muted project or an editor elsewhere, it just has something to
+// say. Only a check that stops it working should make the command fail.
+func TestReport_FailedOnlyOnFailures(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		checks []doctor.Check
+		want   bool
+	}{
+		{"nothing wrong", []doctor.Check{{Level: doctor.OK}}, false},
+		{"a warning", []doctor.Check{{Level: doctor.OK}, {Level: doctor.Warn}}, false},
+		{"a failure", []doctor.Check{{Level: doctor.OK}, {Level: doctor.Fail}}, true},
+		{"both", []doctor.Check{{Level: doctor.Warn}, {Level: doctor.Fail}}, true},
+		{"nothing checked", nil, false},
+	} {
+		if got := (doctor.Report{Checks: c.checks}).Failed(); got != c.want {
+			t.Errorf("%s: Failed() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -276,16 +276,18 @@ func runDoctor(args []string) int {
 		}
 	}
 
-	switch r.Worst() {
-	case doctor.OK:
-		fmt.Println("\nNothing wrong here.")
-		return 0
-	case doctor.Warn:
-		fmt.Println("\nWorking, but see the notes above.")
-		return 1
-	default:
+	// A warning is worth reading and not worth failing over, so only something
+	// that actually stops the panel working makes the command exit non-zero.
+	switch {
+	case r.Failed():
 		fmt.Println("\nThe panel will not work until the failures above are fixed.")
 		return 1
+	case r.Worst() == doctor.Warn:
+		fmt.Println("\nWorking, but see the notes above.")
+		return 0
+	default:
+		fmt.Println("\nNothing wrong here.")
+		return 0
 	}
 }
 

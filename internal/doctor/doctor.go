@@ -66,6 +66,13 @@ func (r Report) Worst() Level {
 	return worst
 }
 
+// Failed reports whether anything is actually stopping the panel working.
+//
+// A warning is not a failure: a muted project or an editor open elsewhere is
+// worth saying and still works. Only a check the panel cannot get past counts,
+// so a script can tell "something to mention" from "something to fix".
+func (r Report) Failed() bool { return r.Worst() == Fail }
+
 // Options are the surroundings to examine. They are arguments rather than
 // globals so the checks can be run against a fixture.
 type Options struct {

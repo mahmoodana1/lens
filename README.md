@@ -116,7 +116,8 @@ lens doctor
 
 It checks each thing that has to be true — hooks wired, tmux reachable, this
 project not muted, edits actually landing — and says which one is not, with the
-command to fix it.
+command to fix it. It exits non-zero only when something is actually stopping
+the panel working, so a note about a muted project does not fail a script.
 
 To remove it again:
 
