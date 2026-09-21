@@ -90,14 +90,15 @@ var groups = []group{
 func Palette(s Server) (Colours, error) {
 	var c Colours
 
-	parts := make([]string, 0, len(groups)+1)
+	// A sentinel at each end: a group the scheme is silent about answers with
+	// an empty string, and the reply is trimmed, so an empty answer at either
+	// edge would be lost and the count would not line up.
+	parts := make([]string, 0, len(groups)+3)
+	parts = append(parts, `'.'`)
 	for _, g := range groups {
 		parts = append(parts, fmt.Sprintf(`synIDattr(synIDtrans(hlID(%s)),%s)`, vimString(g.name), vimString(g.attr+"#")))
 	}
 	parts = append(parts, `synIDattr(synIDtrans(hlID('Comment')),'italic')`)
-	// A group the scheme says nothing about answers with an empty string, and
-	// trailing empties would be trimmed off the end of the reply. The sentinel
-	// keeps the last real answer away from that edge.
 	parts = append(parts, `'.'`)
 
 	out, err := query(s.Addr, "join(["+strings.Join(parts, ",")+"],\"\\n\")")
@@ -106,9 +107,10 @@ func Palette(s Server) (Colours, error) {
 	}
 
 	answers := strings.Split(out, "\n")
-	if want := len(groups) + 2; len(answers) != want {
+	if want := len(groups) + 3; len(answers) != want {
 		return c, fmt.Errorf("editor: the palette came back with %d answers, want %d", len(answers), want)
 	}
+	answers = answers[1:] // past the opening sentinel
 
 	for i, g := range groups {
 		value := strings.TrimSpace(answers[i])

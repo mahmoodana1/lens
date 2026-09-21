@@ -94,7 +94,10 @@ func JumpTo(s Server, file string, line int) error {
 	if err != nil {
 		abs = file
 	}
-	expr := fmt.Sprintf(`execute("drop +%d " . fnameescape(%s))`, line, vimString(abs))
+	// "drop" then the line as its own ex command, rather than drop's +cmd:
+	// when the file is already on screen some versions jump to the window and
+	// skip the +cmd entirely, leaving the cursor wherever it was.
+	expr := fmt.Sprintf(`execute("drop " . fnameescape(%s) . " | %d")`, vimString(abs), line)
 	if _, err := query(s.Addr, expr); err != nil {
 		return fmt.Errorf("editor: opening %s: %w", file, err)
 	}
