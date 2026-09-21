@@ -3,11 +3,14 @@
 A panel that shows what Claude Code changes in your code, as it happens, so you
 can read it rather than scroll past it.
 
+![The files a turn changed, and the newest diff beside them](docs/screenshots/files.png)
+
 It pops up by itself in a tmux popup when Claude finishes a turn that changed
 files — a turn that only answered a question leaves it closed — lists the files
-on the left and the newest diff on the right, and moves under vim motions. A popup holds the keyboard, so it is scrollable the moment it
-appears — there is no pane to switch to first. Each diff carries the prompt that
-caused it, so you see the request and the code that satisfied it side by side.
+on the left and the newest diff on the right, and moves under vim motions. A
+popup holds the keyboard, so it is scrollable the moment it appears — there is
+no pane to switch to first. Each diff carries the prompt that caused it, so you
+see the request and the code that satisfied it side by side.
 
 The list has two levels. At the top it is the files, grouped under the directory
 they live in so a path is said once rather than on every row. `l` goes into the
@@ -15,6 +18,15 @@ file under the cursor: the other files give way to that file's own history —
 each edit, with the hunks it made listed under it, named by line number and the
 first line they changed. Picking a hunk jumps the diff to it, so a file with a
 past can be read one change at a time. `h` or `esc` comes back out.
+
+![A file's own history: three edits to hello.py, each with the hunks it made](docs/screenshots/inside-a-file.png)
+
+`enter` is the same journey in one key — into the file, then into a full-width
+diff with no list beside it at all. `J`/`K` move to the next file at any depth,
+so file after file can be read without backing out, and `esc` retraces each
+step.
+
+![The same diff across the full width of the popup](docs/screenshots/diff-panel.png)
 
 `o` opens what you are looking at in your editor and stands aside — the hunk
 under the cursor, or the line the diff cursor is on. It hands the file to the
@@ -36,10 +48,6 @@ counts only what is left.
 What you put down is kept with the session, next to its read state, so closing
 the popup and reopening it finds the list as you left it — and `u` still reaches
 back past the reopen. Another session has its own history and opens untouched.
-
-`enter` is the same journey in one key — into the file, then into a full-width
-diff with no list beside it at all. `J`/`K` move to the next file at any depth,
-so file after file can be read without backing out. `esc` retraces each step.
 
 It opens ready to search: type to filter the list by file name, `⏎` to keep the
 filter, `esc` to clear it. Changes you have not looked at carry a `●` and
