@@ -27,6 +27,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mahmood/lens/internal/doctor"
 	"github.com/mahmood/lens/internal/editor"
+	"github.com/mahmood/lens/internal/glyph"
 	"github.com/mahmood/lens/internal/hook"
 	"github.com/mahmood/lens/internal/hooks"
 	"github.com/mahmood/lens/internal/pane"
@@ -275,11 +276,14 @@ func runDoctor(args []string) int {
 		Version:  version,
 	})
 
-	mark := map[doctor.Level]string{doctor.OK: "✓", doctor.Warn: "!", doctor.Fail: "✗"}
+	// The doctor is what someone runs when things already look wrong, so it is
+	// the last place that should look wrong itself.
+	g := glyph.Current
+	mark := map[doctor.Level]string{doctor.OK: g.Tick, doctor.Warn: "!", doctor.Fail: g.Cross}
 	for _, c := range r.Checks {
 		fmt.Printf("%s %-11s %s\n", mark[c.Level], c.Name, c.Detail)
 		if c.Fix != "" && c.Level != doctor.OK {
-			fmt.Printf("  %-11s → %s\n", "", c.Fix)
+			fmt.Printf("  %-11s %s %s\n", "", g.Arrow, c.Fix)
 		}
 	}
 
@@ -339,7 +343,8 @@ func runHooks(args []string) error {
 		fmt.Printf("  changed  %s\n", *settings)
 		fmt.Printf("           %d hooks added: %s\n", len(hooks.Events()), strings.Join(hooks.Events(), ", "))
 		fmt.Printf("           each one runs %s\n", *binary)
-		fmt.Printf("           everything else in that file was left as it was\n")
+		fmt.Printf("           nothing else in it was lost, though its keys come back\n")
+		fmt.Printf("           sorted and re-indented\n")
 		if existed {
 			fmt.Printf("  kept     %s\n", hooks.BackupPath(*settings))
 			fmt.Printf("           that file exactly as it was a moment ago\n")
@@ -350,7 +355,8 @@ func runHooks(args []string) error {
 		fmt.Printf("           swept 24 hours after a session stops changing\n")
 		fmt.Println()
 		fmt.Println("  Nothing else on this machine is touched. Your code is only read,")
-		fmt.Println("  never written, and nothing hidden — anything under a dot — is")
+		fmt.Printf("  never written, and nothing hidden %s anything under a dot %s is\n",
+			glyph.Current.Dash, glyph.Current.Dash)
 		fmt.Println("  recorded at all. lens makes no network connections.")
 		fmt.Println()
 		fmt.Println("Restart Claude Code to load the hooks.")
@@ -367,7 +373,8 @@ func runHooks(args []string) error {
 		fmt.Println("lens: removed from Claude Code.")
 		fmt.Println()
 		fmt.Printf("  changed  %s\n", *settings)
-		fmt.Printf("           %d hooks removed; everything else left as it was\n", n)
+		fmt.Printf("           %d hooks removed; nothing else in it was lost, though its\n", n)
+		fmt.Printf("           keys come back sorted and re-indented\n")
 		fmt.Printf("  kept     %s\n", hooks.BackupPath(*settings))
 		fmt.Printf("  kept     %s\n", store.Root())
 		fmt.Printf("           what was captured is yours; delete it with rm -rf\n")

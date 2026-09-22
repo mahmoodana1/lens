@@ -43,7 +43,7 @@ func ElidePath(dir string, width int) string {
 	// Drop from the middle outwards, keeping the first and last components,
 	// until what is left fits.
 	for lo, hi := 1, len(parts)-1; lo < hi; lo++ {
-		kept := append(append([]string{}, parts[:lo]...), "…")
+		kept := append(append([]string{}, parts[:lo]...), gl.Ellipsis)
 		kept = append(kept, parts[hi:]...)
 		if s := strings.Join(kept, "/") + "/"; VisibleWidth(s) <= width {
 			return s
@@ -51,7 +51,7 @@ func ElidePath(dir string, width int) string {
 	}
 
 	// Only the last component has a chance now, and then only its end.
-	if tail := "…/" + parts[len(parts)-1] + "/"; VisibleWidth(tail) <= width {
+	if tail := gl.Ellipsis + "/" + parts[len(parts)-1] + "/"; VisibleWidth(tail) <= width {
 		return tail
 	}
 	cut, _ := elideLeft(dir, width)

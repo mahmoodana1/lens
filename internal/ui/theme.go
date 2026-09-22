@@ -350,20 +350,41 @@ func truncateVisible(s string, width int) string {
 	if uniseg.StringWidth(s) <= width {
 		return s
 	}
-	if width == 1 {
-		return "…"
+	// The marker is not always one cell: the unicode ellipsis is one and the
+	// ASCII one is three, and reserving a single cell for either would overflow
+	// the width this was given.
+	mark := gl.Ellipsis
+	mw := uniseg.StringWidth(mark)
+	if width <= mw {
+		return cutToWidth(mark, width)
 	}
 	out := make([]rune, 0, len(s))
 	w := 0
 	for _, r := range s {
 		rw := uniseg.StringWidth(string(r))
-		if w+rw > width-1 {
+		if w+rw > width-mw {
 			break
 		}
 		out = append(out, r)
 		w += rw
 	}
-	return string(out) + "…"
+	return string(out) + mark
+}
+
+// cutToWidth takes as many whole runes as fit, with nothing to mark the cut:
+// it is for the marker itself, when even that does not fit.
+func cutToWidth(s string, width int) string {
+	out := make([]rune, 0, len(s))
+	w := 0
+	for _, r := range s {
+		rw := uniseg.StringWidth(string(r))
+		if w+rw > width {
+			break
+		}
+		out = append(out, r)
+		w += rw
+	}
+	return string(out)
 }
 
 // StripANSIForTest exposes stripANSI so tests can assert on plain text.

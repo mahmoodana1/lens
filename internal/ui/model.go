@@ -558,13 +558,13 @@ func (m *Model) statusLine() string {
 
 	// Both counts are of what the list is showing: a header that keeps counting
 	// dismissed rows disagrees with the list under it.
-	counts := fmt.Sprintf("  %s · %s", plural(m.visibleEdits(), "edit"), plural(m.fileCount(), "file"))
+	counts := fmt.Sprintf("  %s "+gl.Sep+" %s", plural(m.visibleEdits(), "edit"), plural(m.fileCount(), "file"))
 	if n := m.Unread(); n > 0 {
-		counts += fmt.Sprintf(" · %d unread", n)
+		counts += fmt.Sprintf(" "+gl.Sep+" %d unread", n)
 	}
 	// Rows that vanish without a word are unnerving, and u is how they come back.
 	if n := m.hidden.Len(); n > 0 {
-		counts += fmt.Sprintf(" · %d hidden", n)
+		counts += fmt.Sprintf(" "+gl.Sep+" %d hidden", n)
 	}
 	return styHeading.Render(name) + styDim.Render(counts) + state
 }
@@ -581,7 +581,7 @@ func shortPath(p string) string {
 // happened to it, and a mark saying there is a level to go back to.
 func (m *Model) fileStatusLine() string {
 	added, removed, edits := m.fileTotals(m.openFile)
-	head := styHeading.Render("◀ " + m.openFile)
+	head := styHeading.Render(gl.Back + " " + m.openFile)
 	return head + styDim.Render(fmt.Sprintf("  %s  ", plural(edits, "edit"))) + counts(added, removed)
 }
 

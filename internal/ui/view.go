@@ -7,11 +7,25 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const helpText = "j/k move · l open file · o edit · dd hide · u undo · / find · tab focus · q quit"
+// The help lines are joined with the glyph set's separator rather than written
+// out, so a terminal that cannot draw it gets a plain line instead of one
+// stray character on an otherwise readable screen.
+func helpText() string {
+	return join("j/k move", "l open file", "o edit", "dd hide", "u undo", "/ find", "tab focus", "q quit")
+}
 
-const insideHelpText = "j/k move · enter full diff · o edit · h back · dd hide · n/N hunk · q quit"
+func insideHelpText() string {
+	return join("j/k move", "enter full diff", "o edit", "h back", "dd hide", "n/N hunk", "q quit")
+}
 
-const panelHelpText = "j/k line · n/N hunk · o edit · J/K file · ctrl-f/b page · esc back · q quit"
+func panelHelpText() string {
+	return join("j/k line", "n/N hunk", "o edit", "J/K file", "ctrl-f/b page", "esc back", "q quit")
+}
+
+// join puts the glyph set's separator between items, spaced.
+func join(items ...string) string {
+	return strings.Join(items, " "+gl.Sep+" ")
+}
 
 // View renders the whole panel. It never exceeds the terminal's bounds: the
 // panel shares a window with Claude Code and must not reflow it.
@@ -42,22 +56,22 @@ func (m *Model) footer() string {
 	if m.filtering {
 		return m.promptLine()
 	}
-	help := helpText
+	help := helpText()
 	if m.panel {
-		return styHelp.Render(truncateVisible(panelHelpText, m.width))
+		return styHelp.Render(truncateVisible(panelHelpText(), m.width))
 	}
 	if m.openFile != "" {
-		help = insideHelpText
+		help = insideHelpText()
 	}
 	if m.focus == focusDiff {
-		help = "diff focused · " + help
+		help = join("diff focused", help)
 	}
 	return styHelp.Render(truncateVisible(help, m.width))
 }
 
 // promptLine shows what has been typed and how much of the list survived it.
 func (m *Model) promptLine() string {
-	left := truncateVisible("/ "+m.filter+"█", m.width)
+	left := truncateVisible("/ "+m.filter+gl.Block, m.width)
 	right := truncateVisible(
 		fmt.Sprintf("%d of %d", m.matchCount(), len(m.sessionFiles())),
 		maxInt(0, m.width-VisibleWidth(left)-1))
@@ -137,7 +151,7 @@ func (m *Model) paneLines(height int) []string {
 			continue
 		}
 		left = padVisible(left, lw)
-		out = append(out, left+" "+styBorder.Render("│")+" "+right)
+		out = append(out, left+" "+styBorder.Render(gl.Border)+" "+right)
 	}
 	return out
 }
@@ -177,10 +191,10 @@ func (m *Model) listRow(i, width int) string {
 	// Two marker columns: where the cursor is, and whether this is still unread.
 	cursor, dot := " ", " "
 	if selected {
-		cursor = "❯"
+		cursor = gl.Caret
 	}
 	if unread {
-		dot = "●"
+		dot = gl.Dot
 	}
 	marker := cursor + dot + indent(r)
 
@@ -262,11 +276,12 @@ func trimMatches(match []int, n int) []int {
 // ellipsis, and reports how many runes went.
 func elideLeft(label string, width int) (string, int) {
 	runes := []rune(label)
-	if len(runes) <= width || width < 2 {
+	mark := VisibleWidth(gl.Ellipsis)
+	if len(runes) <= width || width < mark+1 {
 		return truncateVisible(label, width), 0
 	}
-	cut := len(runes) - (width - 1)
-	return "…" + string(runes[cut:]), cut
+	cut := len(runes) - (width - mark)
+	return gl.Ellipsis + string(runes[cut:]), cut
 }
 
 // shiftMatches moves the filter's highlight positions along with an elided
@@ -298,7 +313,7 @@ func shortCounts(added, removed int) string {
 func (m *Model) waitingLines(height int) []string {
 	out := make([]string, 0, height)
 	out = append(out, "")
-	out = append(out, styDim.Render(truncateVisible("  waiting for Claude to change something…", m.width)))
+	out = append(out, styDim.Render(truncateVisible("  waiting for Claude to change something"+gl.Ellipsis, m.width)))
 	for len(out) < height {
 		out = append(out, "")
 	}
@@ -308,7 +323,7 @@ func (m *Model) waitingLines(height int) []string {
 func (m *Model) helpLines(height int) []string {
 	rows := [][2]string{
 		{"j / k", "move down / up"},
-		{"/", "filter by file name (⏎ keep, esc clear)"},
+		{"/", "filter by file name (" + gl.Enter + " keep, esc clear)"},
 		{"ctrl-n / ctrl-p", "move while the filter prompt is open"},
 		{"ctrl-d / ctrl-u", "half page down / up"},
 		{"ctrl-e / ctrl-y", "scroll the diff a line, either pane focused"},
@@ -325,7 +340,7 @@ func (m *Model) helpLines(height int) []string {
 		{"u / ctrl-r", "undo / redo one dd at a time"},
 		{"+ / -", "more / less surrounding context"},
 		{"tab", "move focus between list and diff (the diff gets a cursor)"},
-		{"●", "an edit you have not looked at yet"},
+		{gl.Dot, "an edit you have not looked at yet"},
 		{"?", "close this help"},
 		{"q", "quit and clear this session"},
 	}

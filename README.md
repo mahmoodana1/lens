@@ -66,6 +66,12 @@ editor running it falls back to a built-in tokyonight-moon. The
 washes are its `DiffAdd`, `DiffDelete` and `CursorLine`, taken whole. Comments
 and docstrings come out italic, as they do in the editor.
 
+On a terminal that cannot promise UTF-8 — a slim container, a bare server, a
+stripped environment — the furniture would arrive as stray `_`: the divider, the
+unread dot, the cursor, the doctor's ticks. Lens asks the locale first and falls
+back to characters every terminal has, keeping each marker one cell wide so the
+columns still line up. Plainer, and never wrong.
+
 A file type the highlighter has never heard of used to come out as a wall of
 plain text — `.bats`, `.tmux`, `.conf` and friends have no lexer of their own.
 Those borrow one that reads close enough (a bats file is bash with a test
@@ -121,7 +127,7 @@ Three paths, and it says so on the way in rather than leaving you to find out:
 | | |
 |---|---|
 | `~/.local/bin/lens` | the binary |
-| `~/.claude/settings.json` | five hooks added. Other tools' hooks and your own settings in that file are left exactly as they were, and a copy of the file as it was is kept beside it as `settings.json.lens-backup` |
+| `~/.claude/settings.json` | five hooks added. Other tools' hooks and your own settings are kept — though the file is written back with its keys sorted and re-indented, so a hand-arranged one comes back tidied. A copy of it as it was is kept beside it as `settings.json.lens-backup` |
 | `~/.local/state/lens/` | what Claude changed and the prompts that caused it, so the panel can show them. Swept 24 hours after a session stops changing. `$XDG_STATE_HOME` is honoured |
 
 Nothing else is touched. Your code is only ever read, never written — `dd`

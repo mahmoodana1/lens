@@ -117,20 +117,20 @@ func RenderDiffFull(e capture.Event, prompt string, ctx int, width int, hidden H
 	head := fmt.Sprintf("%s  %s", e.Rel, counts(e.Added, e.Removed))
 	r.add(LinePlain, styHeading.Render(truncateVisible(head, width)))
 
-	sub := fmt.Sprintf("%s · %s", orDash(e.Tool), e.Time.Format("15:04:05"))
+	sub := fmt.Sprintf("%s "+gl.Sep+" %s", orDash(e.Tool), e.Time.Format("15:04:05"))
 	switch e.Kind {
 	case "create":
-		sub = "new file · " + sub
+		sub = join("new file", sub)
 	case "delete":
 		// Not an edit that happened to remove a lot: the file is gone.
-		sub = "deleted · " + sub
+		sub = join("deleted", sub)
 	}
 	r.add(LinePlain, styDim.Render(truncateVisible(sub, width)))
 
 	if prompt != "" {
 		r.add(LinePlain, "")
 		for _, line := range wrap(collapse(prompt), width-2) {
-			r.add(LinePlain, styIntent.Render("❯ "+line))
+			r.add(LinePlain, styIntent.Render(gl.Caret+" "+line))
 		}
 	}
 

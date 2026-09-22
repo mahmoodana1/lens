@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mahmood/lens/internal/editor"
+	"github.com/mahmood/lens/internal/glyph"
 	"github.com/mahmood/lens/internal/hooks"
 	"github.com/mahmood/lens/internal/store"
 )
@@ -184,7 +185,7 @@ func checkProject(o Options) Check {
 	}
 	if home, err := os.UserHomeDir(); err == nil && filepath.Clean(o.Project) == filepath.Clean(home) {
 		c.Level = Warn
-		c.Detail += " — your home directory, which is too broad to watch"
+		c.Detail += " " + glyph.Current.Dash + " your home directory, which is too broad to watch"
 		c.Fix = "start Claude Code inside a project instead"
 	}
 	return c
@@ -201,7 +202,7 @@ func checkAutoOpen(o Options) Check {
 		return c
 	}
 	c.Level = Warn
-	c.Detail = "OFF for " + short(o.Project) + " — capture runs, the panel stays shut"
+	c.Detail = "OFF for " + short(o.Project) + " " + glyph.Current.Dash + " capture runs, the panel stays shut"
 	c.Fix = fmt.Sprintf("lens auto on --project %s", o.Project)
 	return c
 }

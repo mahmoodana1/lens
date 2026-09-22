@@ -189,7 +189,8 @@ head2 "2b. says what it changed"
 says "it names the settings file it edited"  "$out" "$SETTINGS"
 says "it names the hooks it added"           "$out" "PostToolUse"
 says "it names the binary they run"          "$out" "$BIN"
-says "it says the rest of the file was left alone" "$out" "left as it was"
+says "it says nothing else was lost" "$out" "nothing else in it was lost"
+says "and is honest that the file gets reformatted" "$out" "sorted and re-indented"
 says "it names where captured changes go"    "$out" "$STATE"
 says "it says your code is only read"        "$out" "never written"
 says "it says nothing is sent anywhere"      "$out" "no network connections"
@@ -331,6 +332,41 @@ if command -v tmux >/dev/null 2>&1; then
   "${TM[@]}" kill-server >/dev/null 2>&1
 else
   bad "tmux is not installed in this container, so the panel was never drawn"
+fi
+
+# ── 7b. the panel on a terminal that cannot draw box characters ─────────────
+# A slim container has no UTF-8 locale, and lens is mostly furniture: the
+# divider, the unread dot, the cursor. Drawn anyway they arrive as stray "_"
+# and the tool looks broken rather than plain.
+head2 "7b. draws in plain ASCII where the locale promises nothing"
+if command -v tmux >/dev/null 2>&1; then
+  "${TM[@]}" kill-server >/dev/null 2>&1
+  env -u LANG -u LC_ALL -u LC_CTYPE "${TM[@]}" new-session -d -s plain -x 200 -y 50 \
+    "cd '$PROJ' && '$BIN' --project '$PROJ' 2>$HOME/plain.err"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.4
+    plain=$("${TM[@]}" capture-pane -p -t plain 2>/dev/null)
+    [[ "$plain" == *"hello.py"* ]] && break
+  done
+  plain=$("${TM[@]}" capture-pane -p -t plain 2>/dev/null)
+
+  # Whatever is left after deleting tab, newline, carriage return and every
+  # printable ASCII character is something this terminal cannot draw.
+  stray=$(printf '%s' "$plain" | LC_ALL=C tr -d '\11\12\15\40-\176')
+  if [[ -z "$stray" ]]; then
+    ok "nothing on screen is outside ASCII"
+  else
+    bad "the panel drew characters a plain terminal cannot render" "stray: $stray"
+  fi
+
+  # Plain, but still a panel: the fallback must not cost the content.
+  says "the file is still listed"      "$plain" "hello.py"
+  says "the diff is still there"       "$plain" "line TWO CHANGED"
+  says "the divider fell back to a pipe" "$plain" "|"
+
+  "${TM[@]}" kill-server >/dev/null 2>&1
+else
+  bad "tmux is not installed, so the plain panel was never drawn"
 fi
 
 # ── 8. the automatic popup can be muted per project ─────────────────────────
