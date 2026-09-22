@@ -272,7 +272,19 @@ panel tails it. `UserPromptSubmit` records prompts, joined to edits by
 
 The panel is opened for edits, not for turns: `announced` records the highest
 edit it has been opened for, and a turn whose edits are all below that opens
-nothing.
+nothing. It counts only the edits the panel would actually draw, which is the
+same question `capture.Showable` answers for the panel itself — when those two
+disagreed, a turn whose only writes were a shell command touching files outside
+the project took the keyboard to show nothing. In one real session that was 375
+of 670 openings.
+
+And it opens where its reader is. A tmux popup is drawn on a client's screen
+rather than inside the pane it names, so with several Claude sessions running in
+separate tmux sessions, a turn ending in one of them used to throw a popup over
+whichever project you were working in — mid-turn, showing another project. The
+popup is now opened only when a client is looking at the pane whose turn ended.
+Where nobody is, the turn stays unannounced, so it is shown the next time a turn
+ends with you there rather than passed over.
 
 What the reader does with the panel is kept per session too: `seen` holds the
 edits already read and `dismissed.json` the trail of `dd`s, both under the

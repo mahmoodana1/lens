@@ -104,39 +104,20 @@ func (m *Model) setSession(sess store.Session) {
 // panel has no business showing, before anything is laid out over them.
 func normalise(sess *store.Session) {
 	canonicalRels(sess)
-	dropHidden(sess)
-	dropStrayed(sess)
+	dropUnshowable(sess)
 }
 
-// dropStrayed removes what the file walk swept up outside the project.
+// dropUnshowable removes what the panel does not draw: anything hidden, and
+// what the file walk swept up outside the project.
 //
-// The walk is confined to the project now, but a log written before that still
-// holds another program's scratch files — Claude Code's own temp repositories,
-// a plugin's preload files. An edit made deliberately with the Edit or Write
-// tool is a different thing: outside the project or not, someone meant it, so
-// it stays.
-func dropStrayed(sess *store.Session) {
+// The rule lives in capture.Showable because the decision to open a popup has
+// to use the same one. When they disagreed, the popup was opened for edits the
+// panel then hid, and appeared empty.
+func dropUnshowable(sess *store.Session) {
 	root := sess.Meta.CWD
-	if root == "" {
-		return
-	}
 	kept := sess.Events[:0]
 	for _, e := range sess.Events {
-		if e.Tool == "Bash" && e.Path != "" && !capture.Inside(root, e.Path) {
-			continue
-		}
-		kept = append(kept, e)
-	}
-	sess.Events = kept
-}
-
-// dropHidden removes edits to hidden files. They are turned away when captured
-// now, but a log written before that still holds them, and it is the panel that
-// has to stop showing them.
-func dropHidden(sess *store.Session) {
-	kept := sess.Events[:0]
-	for _, e := range sess.Events {
-		if e.Path != "" && capture.HiddenPath(sess.Meta.CWD, e.Path) {
+		if !capture.Showable(root, e) {
 			continue
 		}
 		kept = append(kept, e)

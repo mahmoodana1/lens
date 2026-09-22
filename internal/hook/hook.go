@@ -204,8 +204,18 @@ func Stop(stdin io.Reader) error {
 		project = env.CWD
 	}
 
-	seq, ok := shouldOpen(sess.Events, announced, store.AutoOpen(project))
+	seq, ok := shouldOpen(project, sess.Events, announced, store.AutoOpen(project))
 	if !ok {
+		return nil
+	}
+
+	// A popup is drawn on its client's screen rather than inside the pane it
+	// names, so opening one for a pane nobody is watching puts it over whatever
+	// they are watching instead — mid-turn, showing another project. Nothing is
+	// announced in that case: the edits are shown the next time a turn ends
+	// with the reader here, rather than passed over for good.
+	if !pane.WatchingHere() {
+		Debugf("stop: nobody is watching this pane; leaving %d unannounced", seq)
 		return nil
 	}
 
@@ -228,12 +238,18 @@ func Stop(stdin io.Reader) error {
 // this session have any edits at all" — otherwise the first edit of a session
 // would reopen the panel at the end of every later turn, including the ones
 // that only answered a question.
-func shouldOpen(events []capture.Event, announced int, autoOpen bool) (int, bool) {
+//
+// It asks only about the edits the panel would draw. Counting everything
+// recorded is what opened empty popups: the file walk records a shell
+// command's writes outside the project, the panel hides them, and a turn whose
+// only writes were those would take the keyboard to show nothing. In one real
+// session 375 of 661 events were of that kind.
+func shouldOpen(root string, events []capture.Event, announced int, autoOpen bool) (int, bool) {
 	if !autoOpen || len(events) == 0 {
 		return 0, false
 	}
-	latest := events[len(events)-1].Seq
-	if latest <= announced {
+	latest := capture.LastShowable(root, events)
+	if latest == 0 || latest <= announced {
 		return 0, false
 	}
 	return latest, true
