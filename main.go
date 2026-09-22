@@ -42,7 +42,7 @@ import (
 // plainly instead of claiming to be a release it is months ahead of — which is
 // what a bug report needs. The release workflow replaces it with the tag and
 // checks that it took.
-var version = "0.1.3-dev"
+var version = "0.1.4-dev"
 
 func main() {
 	// Hooks run on every edit of every session. They must never take a session
