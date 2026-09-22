@@ -79,6 +79,54 @@ else
   exit 1
 fi
 
+failed=()
+
+# ── the published release, as a friend would fetch it ───────────────────────
+# No container needed: the assets are checked against their checksums, and the
+# one asset this machine can run is asked what version it is.
+check_release() {
+  say "the published release"
+  local tag dl got
+  tag="$(gh release view --repo mahmoodana1/lens --json tagName -q .tagName 2>/dev/null)"
+  if [[ -z "$tag" ]]; then
+    printf '   \033[31mFAIL\033[0m no published release to check\n'; return 1
+  fi
+  note "latest is $tag"
+
+  dl="$art/dl"; mkdir -p "$dl"
+  if ! gh release download "$tag" --repo mahmoodana1/lens --dir "$dl" --clobber 2>/dev/null; then
+    printf '   \033[31mFAIL\033[0m could not download the release assets\n'; return 1
+  fi
+
+  local bad=0
+  if (cd "$dl" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
+    note "every asset matches SHA256SUMS"
+  else
+    printf '   \033[31mFAIL\033[0m the checksums do not match the assets\n'; bad=1
+  fi
+  for a in lens_linux_amd64 lens_linux_arm64 lens_darwin_amd64 lens_darwin_arm64; do
+    if [[ -f "$dl/$a" ]]; then
+      note "$a present"
+    else
+      printf '   \033[31mFAIL\033[0m %s is missing from the release\n' "$a"; bad=1
+    fi
+  done
+
+  # What a friend's curl actually lands them with: does it run, and does it
+  # admit to being the version the tag claims?
+  chmod +x "$dl/lens_linux_amd64" 2>/dev/null
+  got=$("$dl/lens_linux_amd64" --version 2>&1)
+  if [[ "$got" == *"${tag#v}"* ]]; then
+    note "the downloaded binary reports $got"
+  else
+    printf '   \033[31mFAIL\033[0m the release binary says %q, not %s\n' "$got" "${tag#v}"; bad=1
+  fi
+  if [[ "$got" == *-dev* ]]; then
+    printf '   \033[31mFAIL\033[0m a -dev build was published as %s\n' "$tag"; bad=1
+  fi
+  return $bad
+}
+
 # ── without docker: a throwaway HOME, here ──────────────────────────────────
 # Weaker than a container and worth having: it covers the install, the hooks,
 # the capture and the panel, but not "a machine with no Go" or another libc.
@@ -102,10 +150,14 @@ if [[ "$local" == yes ]]; then
     chmod -R u+w "$home" 2>/dev/null
     rm -rf "$home"
   done
+  if [[ "$release" == yes ]]; then
+    check_release || fresh_failed+=(release)
+  fi
+
   if [[ ${#fresh_failed[@]} -eq 0 ]]; then
     printf '\n\033[1;32m══ a fresh HOME works: every check passed\033[0m\n'
-    printf '   For the real thing (no Go, no glibc, published assets):\n'
-    printf '     sudo systemctl start docker && ./test/fresh-install.sh --release\n'
+    printf '   What only a container can prove — no Go toolchain, no glibc:\n'
+    printf '     sudo systemctl start docker && ./test/fresh-install.sh\n'
     exit 0
   fi
   printf '\n\033[1;31m══ these scenarios failed: %s\033[0m\n' "${fresh_failed[*]}"
@@ -141,8 +193,6 @@ if [[ "$online" == no ]]; then
   fi
 fi
 
-failed=()
-
 run_scenario() {
   local name=$1 image=$2; shift 2
   say "scenario: $name"
@@ -167,37 +217,8 @@ else
   failed+=(musl)
 fi
 
-# ── the published release, as a friend would fetch it ───────────────────────
 if [[ "$release" == yes ]]; then
-  say "the published release"
-  tag="$(gh release view --repo mahmoodana1/lens --json tagName -q .tagName 2>/dev/null)"
-  if [[ -z "$tag" ]]; then
-    printf '   \033[31mFAIL\033[0m no published release to check\n'; failed+=(release)
-  else
-    note "latest is $tag"
-    dl="$art/dl"; mkdir -p "$dl"
-    if gh release download "$tag" --repo mahmoodana1/lens --dir "$dl" --clobber 2>/dev/null; then
-      if (cd "$dl" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
-        note "every asset matches SHA256SUMS"
-      else
-        printf '   \033[31mFAIL\033[0m the checksums do not match the assets\n'; failed+=(release)
-      fi
-      for a in lens_linux_amd64 lens_linux_arm64 lens_darwin_amd64 lens_darwin_arm64; do
-        [[ -f "$dl/$a" ]] && note "$a present" || { printf '   \033[31mFAIL\033[0m %s is missing from the release\n' "$a"; failed+=(release); }
-      done
-      # The one asset this machine can run: check the URL in the README works
-      # and that what comes back is the version the tag claims.
-      chmod +x "$dl/lens_linux_amd64" 2>/dev/null
-      got=$(docker run --rm -v "$dl:/dl:ro" debian:stable-slim /dl/lens_linux_amd64 --version 2>&1)
-      if [[ "$got" == *"${tag#v}"* ]]; then
-        note "the downloaded binary reports $got"
-      else
-        printf '   \033[31mFAIL\033[0m the release binary says %q, not %s\n' "$got" "${tag#v}"; failed+=(release)
-      fi
-    else
-      printf '   \033[31mFAIL\033[0m could not download the release assets\n'; failed+=(release)
-    fi
-  fi
+  check_release || failed+=(release)
 fi
 
 # ── the tally ───────────────────────────────────────────────────────────────
