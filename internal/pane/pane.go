@@ -13,6 +13,12 @@ const (
 	popupWidth  = "90%"
 	popupHeight = "85%"
 	popupTitle  = " lens "
+
+	// tmux paints popups with its own popup-style, a flat grey since 3.6.
+	// "default" hands both the body and the border back to the terminal, so
+	// the panel wears whatever theme the reader's terminal does.
+	popupStyle  = "bg=default,fg=default"
+	popupBorder = "fg=default"
 )
 
 // Open shows the panel for a session in a tmux popup.
@@ -31,6 +37,7 @@ func Open(sessionID, self string) error {
 		"display-popup", "-E",
 		"-w", popupWidth, "-h", popupHeight,
 		"-T", popupTitle, "-t", dest,
+		"-s", popupStyle, "-S", popupBorder,
 		self, "--session", sessionID)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
